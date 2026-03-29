@@ -1,8 +1,8 @@
 -- bezier.lua
 
--- Render one SVG subpath via love.graphics.
+-- Runtime SVG path renderer for Compy.
 
--- Cubic Bezier by de Casteljau subdivision.
+-- Flatten once, cache. Convex/concave dispatch.
 
 gfx = love.graphics
 
@@ -10,8 +10,8 @@ MAX_DEPTH = 6
 FLAT_TOL = 0.5
 DEGEN_TOL = 0.001
 HALF = 0.5
-MIN_POLY_COORDS = 6
-MIN_LINE_COORDS = 4
+MIN_POLY = 6
+MIN_LINE = 4
 
 -- Flat coordinate buffer, reused across calls
 
@@ -24,14 +24,6 @@ function flat_push(x, y)
   flat[flat_len + 1] = x
   flat[flat_len + 2] = y
   flat_len = flat_len + 2
-end
-
--- Trim array tail beyond given length
-
-function trim_tail(arr, len)
-  for i = len + 1, #arr do
-    arr[i] = nil
-  end
 end
 
 -- Flatness test for subdivision
@@ -52,16 +44,14 @@ end
 -- Create zero-filled 8-element buffer
 
 function buf8()
-  return {
-    0,
-    0,
-    0,
-    0,
+  local b = {
     0,
     0,
     0,
     0
   }
+  b[5], b[6], b[7], b[8] = 0, 0, 0, 0
+  return b
 end
 
 -- Preallocated split buffers per depth
@@ -73,9 +63,12 @@ for sd = 1, MAX_DEPTH do
   split_r[sd] = buf8()
 end
 
--- Reusable midpoint storage for split
+-- Reusable midpoint storage
 
-sp_mid = buf8()
+sp_mid = { }
+sp_mid[1], sp_mid[2] = 0, 0
+sp_mid[3], sp_mid[4] = 0, 0
+sp_mid[5], sp_mid[6] = 0, 0
 
 -- Compute split midpoints
 
@@ -88,23 +81,35 @@ function split_mids(p)
   sp_mid[4] = (sp_mid[2] + by) * HALF
   sp_mid[5] = (bx + (p[5] + p[7]) * HALF) * HALF
   sp_mid[6] = (by + (p[6] + p[8]) * HALF) * HALF
-  sp_mid[7] = (sp_mid[3] + sp_mid[5]) * HALF
-  sp_mid[8] = (sp_mid[4] + sp_mid[6]) * HALF
 end
 
--- Fill left and right buffers from midpoints
+-- Fill left half from curve and midpoint
 
-function split_fill(p, depth)
-  local l, r = split_l[depth], split_r[depth]
+function fill_left(p, l, mx, my)
   l[1], l[2] = p[1], p[2]
   l[3], l[4] = sp_mid[1], sp_mid[2]
   l[5], l[6] = sp_mid[3], sp_mid[4]
-  l[7], l[8] = sp_mid[7], sp_mid[8]
-  r[1], r[2] = sp_mid[7], sp_mid[8]
+  l[7], l[8] = mx, my
+end
+
+-- Fill right half from curve and midpoint
+
+function fill_right(p, r, mx, my)
+  r[1], r[2] = mx, my
   r[3], r[4] = sp_mid[5], sp_mid[6]
   r[5] = (p[5] + p[7]) * HALF
   r[6] = (p[6] + p[8]) * HALF
   r[7], r[8] = p[7], p[8]
+end
+
+-- Split curve into two halves at depth
+
+function split_at(p, depth)
+  local l, r = split_l[depth], split_r[depth]
+  local mx = (sp_mid[3] + sp_mid[5]) * HALF
+  local my = (sp_mid[4] + sp_mid[6]) * HALF
+  fill_left(p, l, mx, my)
+  fill_right(p, r, mx, my)
   return l, r
 end
 
@@ -115,11 +120,11 @@ function subdivide(p, depth)
     flat_push(p[7], p[8])
     return 
   end
-  local next = depth + 1
+  local nd = depth + 1
   split_mids(p)
-  local l, r = split_fill(p, next)
-  subdivide(l, next)
-  subdivide(r, next)
+  local l, r = split_at(p, nd)
+  subdivide(l, nd)
+  subdivide(r, nd)
 end
 
 -- Path command dispatch
@@ -132,11 +137,12 @@ function PATH_CMD.L(cmd, st)
 end
 
 function PATH_CMD.M(cmd, st)
-  PATH_CMD.L(cmd, st)
+  st[1], st[2] = cmd[2], cmd[3]
+  flat_push(cmd[2], cmd[3])
   st[3], st[4] = cmd[2], cmd[3]
 end
 
--- Input curve buffer, reused for each C command
+-- Input curve buffer
 
 input_curve = buf8()
 
@@ -160,8 +166,6 @@ function PATH_CMD.Z(_, st)
   st[1], st[2] = st[3], st[4]
 end
 
--- Flatten one subpath into flat buffer
-
 -- Path state: curX curY startX startY
 
 path_state = {
@@ -171,7 +175,9 @@ path_state = {
   0
 }
 
-function flatten(path)
+-- Flatten one subpath into flat buffer
+
+function do_flatten(path)
   flat_len = 0
   path_state[1] = 0
   path_state[2] = 0
@@ -180,32 +186,85 @@ function flatten(path)
   for _, cmd in ipairs(path) do
     PATH_CMD[cmd[1]](cmd, path_state)
   end
-  trim_tail(flat, flat_len)
 end
 
--- Fill one subpath as polygon
+-- Flatten cache: path table -> copy of flat coords
 
-function bezier_fill(path)
-  flatten(path)
-  if flat_len < MIN_POLY_COORDS then
-    return 
+flat_cache = { }
+
+-- Get flat coords, flatten once on first call
+
+function get_flat(path)
+  local cached = flat_cache[path]
+  if cached then
+    return cached, #cached
   end
-  local ok, tris = pcall(love.math.triangulate, flat)
-  if ok then
-    for _, tri in ipairs(tris) do
-      gfx.polygon("fill", tri)
-    end
-    return 
+  do_flatten(path)
+  local copy = { }
+  for i = 1, flat_len do
+    copy[i] = flat[i]
   end
-  gfx.polygon("fill", flat)
+  flat_cache[path] = copy
+  return copy, flat_len
 end
 
--- Stroke one subpath as line
+-- Draw array of triangles
+
+function draw_tris(tris)
+  for _, tri in ipairs(tris) do
+    gfx.polygon("fill", tri)
+  end
+end
+
+-- Triangle cache
+
+tri_cache = { }
+
+-- Fill convex polygon: flatten + draw
+
+function convex_fill(path)
+  local pts, n = get_flat(path)
+  if n < MIN_POLY then
+    return 
+  end
+  gfx.polygon("fill", pts)
+end
+
+-- Triangulate and cache result
+
+function cache_tris(path, pts)
+  local ok, tris = pcall(love.math.triangulate, pts)
+  if not ok then
+    return nil
+  end
+  tri_cache[path] = tris
+  return tris
+end
+
+-- Fill concave polygon: triangulate + cache
+
+function concave_fill(path)
+  local pts, n = get_flat(path)
+  if n < MIN_POLY then
+    return 
+  end
+  local tris = tri_cache[path]
+  if not tris then
+    tris = cache_tris(path, pts)
+  end
+  if tris then
+    draw_tris(tris)
+  else
+    gfx.polygon("fill", pts)
+  end
+end
+
+-- Stroke path: flatten + draw line
 
 function bezier_stroke(path)
-  flatten(path)
-  if flat_len < MIN_LINE_COORDS then
+  local pts, n = get_flat(path)
+  if n < MIN_LINE then
     return 
   end
-  gfx.line(flat)
+  gfx.line(pts)
 end

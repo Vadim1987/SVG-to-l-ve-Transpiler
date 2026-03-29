@@ -5,6 +5,234 @@
 require("svgxml")
 require("svgpath")
 
+-- Transpile-time flatten for convexity check
+
+FLAT_TOL = 0.5
+DEGEN_TOL = 0.001
+T_MAX_DEPTH = 6
+HALF = 0.5
+PAIR = 2
+MIN_VERTICES = 3
+
+-- Flatness test
+
+function t_is_flat(c)
+  local dx = c[7] - c[1]
+  local dy = c[8] - c[2]
+  local d_sq = dx * dx + dy * dy
+  if d_sq < DEGEN_TOL then
+    return true
+  end
+  local d1 = (c[3] - c[7]) * dy - (c[4] - c[8]) * dx
+  local d2 = (c[5] - c[7]) * dy - (c[6] - c[8]) * dx
+  local s = math.abs(d1) + math.abs(d2)
+  return s * s < FLAT_TOL * d_sq
+end
+
+-- Midpoint buffer
+
+sd_mid = { }
+sd_mid[1], sd_mid[2] = 0, 0
+sd_mid[3], sd_mid[4] = 0, 0
+sd_mid[5], sd_mid[6] = 0, 0
+
+-- Compute de Casteljau midpoints
+
+function sd_mids(c)
+  local bx = (c[3] + c[5]) * HALF
+  local by = (c[4] + c[6]) * HALF
+  sd_mid[1] = (c[1] + c[3]) * HALF
+  sd_mid[2] = (c[2] + c[4]) * HALF
+  sd_mid[3] = (sd_mid[1] + bx) * HALF
+  sd_mid[4] = (sd_mid[2] + by) * HALF
+  sd_mid[5] = (bx + (c[5] + c[7]) * HALF) * HALF
+  sd_mid[6] = (by + (c[6] + c[8]) * HALF) * HALF
+end
+
+-- Fill left and right curve halves
+
+function sd_left(c, lc, mx, my)
+  lc[1], lc[2] = c[1], c[2]
+  lc[3], lc[4] = sd_mid[1], sd_mid[2]
+  lc[5], lc[6] = sd_mid[3], sd_mid[4]
+  lc[7], lc[8] = mx, my
+end
+
+function sd_right(c, rc, mx, my)
+  rc[1], rc[2] = mx, my
+  rc[3], rc[4] = sd_mid[5], sd_mid[6]
+  rc[5] = (c[5] + c[7]) * HALF
+  rc[6] = (c[6] + c[8]) * HALF
+  rc[7], rc[8] = c[7], c[8]
+end
+
+function sd_halves(c, lc, rc)
+  local mx = (sd_mid[3] + sd_mid[5]) * HALF
+  local my = (sd_mid[4] + sd_mid[6]) * HALF
+  sd_left(c, lc, mx, my)
+  sd_right(c, rc, mx, my)
+end
+
+-- Preallocated split buffers per depth
+
+sd_lc = { }
+sd_rc = { }
+for sd_i = 1, T_MAX_DEPTH do
+  sd_lc[sd_i] = { }
+  sd_rc[sd_i] = { }
+end
+
+-- Recursive subdivision into pts array
+
+function t_subdivide(c, depth, pts)
+  if T_MAX_DEPTH <= depth or t_is_flat(c) then
+    pts[#pts + 1] = c[7]
+    pts[#pts + 1] = c[8]
+    return 
+  end
+  local nd = depth + 1
+  sd_mids(c)
+  sd_halves(c, sd_lc[nd], sd_rc[nd])
+  t_subdivide(sd_lc[nd], nd, pts)
+  t_subdivide(sd_rc[nd], nd, pts)
+end
+
+-- Flatten command dispatch
+
+TFLAT = { }
+tfs = {
+  0,
+  0,
+  0,
+  0
+}
+
+function TFLAT.L(cmd, pts)
+  tfs[1], tfs[2] = cmd[1], cmd[2]
+  pts[#pts + 1] = tfs[1]
+  pts[#pts + 1] = tfs[2]
+end
+
+function TFLAT.M(cmd, pts)
+  tfs[1], tfs[2] = cmd[1], cmd[2]
+  pts[#pts + 1] = tfs[1]
+  pts[#pts + 1] = tfs[2]
+  tfs[3], tfs[4] = tfs[1], tfs[2]
+end
+
+-- Curve buffer for TFLAT.C
+
+t_curve = {
+  0,
+  0,
+  0,
+  0
+}
+
+function TFLAT.C(cmd, pts)
+  t_curve[1], t_curve[2] = tfs[1], tfs[2]
+  t_curve[3], t_curve[4] = cmd[1], cmd[2]
+  t_curve[5], t_curve[6] = cmd[3], cmd[4]
+  t_curve[7], t_curve[8] = cmd[5], cmd[6]
+  t_subdivide(t_curve, 0, pts)
+  tfs[1], tfs[2] = cmd[5], cmd[6]
+end
+
+function TFLAT.Z(_, pts)
+  if tfs[1] ~= tfs[3] or tfs[2] ~= tfs[4] then
+    pts[#pts + 1] = tfs[3]
+    pts[#pts + 1] = tfs[4]
+  end
+  tfs[1], tfs[2] = tfs[3], tfs[4]
+end
+
+-- Flatten one subpath to coordinate array
+
+function flatten_subpath(subpath)
+  local pts = { }
+  tfs[1], tfs[2], tfs[3], tfs[4] = 0, 0, 0, 0
+  for _, cmd in ipairs(subpath) do
+    TFLAT[cmd.cmd](cmd, pts)
+  end
+  return pts
+end
+
+-- Cross product at vertex i
+
+function cross_at(pts, i, n)
+  local i2 = (i % n) + 1
+  local i3 = (i2 % n) + 1
+  local ax = pts[i2 * PAIR - 1] - pts[i * PAIR - 1]
+  local ay = pts[i2 * PAIR] - pts[i * PAIR]
+  local bx = pts[i3 * PAIR - 1] - pts[i2 * PAIR - 1]
+  local by = pts[i3 * PAIR] - pts[i2 * PAIR]
+  return ax * by - ay * bx
+end
+
+-- Check if sign breaks convexity
+
+convex_sign = 0
+
+function check_sign(cp)
+  if cp == 0 then
+    return true
+  end
+  if convex_sign == 0 then
+    convex_sign = cp
+    return true
+  end
+  return (0 < convex_sign) == (0 < cp)
+end
+
+-- Check polygon convexity via determinants
+
+function is_convex(pts)
+  local n = #pts / PAIR
+  if n < MIN_VERTICES then
+    return true
+  end
+  convex_sign = 0
+  for i = 1, n do
+    if not check_sign(cross_at(pts, i, n)) then
+      return false
+    end
+  end
+  return true
+end
+
+-- Check subpath convexity: flatten then check
+
+function subpath_convex(subpath)
+  return is_convex(flatten_subpath(subpath))
+end
+
+-- Scale factor for transpile-time scaling
+
+scale_factor = 1
+DEFAULT_W = 800
+DEFAULT_H = 480
+
+-- Compute scale from viewBox and target
+
+function compute_scale(svg, tw, th)
+  local vx, vy, vw, vh = parse_viewbox(svg.attr)
+  if not vx then
+    return 
+  end
+  scale_factor = math.min(tw / vw, th / vh)
+end
+
+-- Scale coordinates in one command
+
+function scale_cmd(cmd)
+  if scale_factor == 1 then
+    return 
+  end
+  for i = 1, #cmd do
+    cmd[i] = cmd[i] * scale_factor
+  end
+end
+
 -- Color parsing
 
 HEX_BASE = 16
@@ -23,8 +251,10 @@ BLACK = {
 function expand_hex(hex)
   hex = hex:gsub("^#", "")
   if #hex == 3 then
-    return hex:sub(1, 1):rep(2) .. hex:sub(2, 2):rep(2) .. hex:
-        sub(3, 3):rep(2)
+    local a = hex:sub(1, 1):rep(2)
+    local b = hex:sub(2, 2):rep(2)
+    local c = hex:sub(3, 3):rep(2)
+    return a .. b .. c
   end
   return hex
 end
@@ -44,17 +274,24 @@ function parse_hex(hex)
   }
 end
 
--- Average gradient stop colors into one solid
+-- Sum gradient stop RGB values
+
+function sum_stops(stops)
+  local r, g, b = 0, 0, 0
+  for _, hex in ipairs(stops) do
+    local c = parse_hex(hex)
+    r = r + c[1]
+    g = g + c[2]
+    b = b + c[3]
+  end
+  return r, g, b
+end
+
+-- Average gradient stops into one solid
 
 function average_stops(stops)
-  local r, g, b, n = 0, 0, 0, 0
-  for _, hex in ipairs(stops) do
-    local color = parse_hex(hex)
-    r = r + color[1]
-    g = g + color[2]
-    b = b + color[3]
-    n = n + 1
-  end
+  local r, g, b = sum_stops(stops)
+  local n = #stops
   return {
     r / n,
     g / n,
@@ -69,9 +306,10 @@ gradients = { }
 
 function collect_stops(node)
   local stops = { }
-  for _, child in ipairs(node.children) do
-    if child.tag == "stop" and child.attr["stop-color"] then
-      stops[#stops + 1] = child.attr["stop-color"]
+  for _, ch in ipairs(node.children) do
+    local sc = ch.attr["stop-color"]
+    if ch.tag == "stop" and sc then
+      stops[#stops + 1] = sc
     end
   end
   return stops
@@ -133,7 +371,7 @@ end
 -- Format a numeric attribute value
 
 function fmt_attr(val)
-  return fmt(tonumber(val))
+  return fmt(tonumber(val) * scale_factor)
 end
 
 -- Color formatting
@@ -164,69 +402,84 @@ end
 
 shape_n = 0
 
+-- Format command numbers as string
+
+function fmt_nums(cmd)
+  local nums = { }
+  for i = 1, #cmd do
+    nums[i] = fmt(cmd[i])
+  end
+  return table.concat(nums, ", ")
+end
+
 -- Emit one path command as Lua table literal
 
 function emit_cmd(cmd)
-  local nums = { }
-  for i = 1, #cmd do
-    nums[#nums + 1] = fmt(cmd[i])
+  local s = "  { \"" .. cmd.cmd .. "\""
+  if 0 < #cmd then
+    s = s .. ", " .. fmt_nums(cmd)
   end
-  if 0 < #nums then
-    emit("  { \"" .. cmd.cmd .. "\", " .. table.concat(
-      nums,
-      ", "
-    ) .. " },")
-  else
-    emit("  { \"" .. cmd.cmd .. "\" },")
+  emit(s .. " },")
+end
+
+-- Emit scaled commands for subpath
+
+function emit_scaled_cmds(subpath)
+  for _, cmd in ipairs(subpath) do
+    scale_cmd(cmd)
+    emit_cmd(cmd)
   end
 end
 
--- Emit one subpath as a named variable
+-- Emit one subpath with convexity tag
 
 function emit_one_subpath(subpath)
   shape_n = shape_n + 1
   local name = "p" .. shape_n
-  emit("local " .. name .. " = {")
-  for _, cmd in ipairs(subpath) do
-    emit_cmd(cmd)
-  end
+  local cvx = subpath_convex(subpath)
+  local tag = cvx and "-- convex" or "-- concave"
+  emit("local " .. name .. " = { " .. tag)
+  emit_scaled_cmds(subpath)
   emit("}")
-  return name
+  return name, cvx
 end
 
 -- Emit all subpaths as separate variables
 
 function emit_all_subpaths(subpaths)
   local names = { }
+  local cvx = { }
   for _, sp in ipairs(subpaths) do
-    names[#names + 1] = emit_one_subpath(sp)
+    local name, convex = emit_one_subpath(sp)
+    names[#names + 1] = name
+    cvx[#cvx + 1] = convex
   end
-  return names
+  return names, cvx
 end
 
 -- Bounding box accumulator
 
-bb = { 
-  0, 
-  0, 
-  0, 
-  0 
+bb = {
+  0,
+  0,
+  0,
+  0
 }
 
 -- Update bbox with one coordinate pair
 
 function bbox_update(x, y)
-  if x < bb[1] then 
-    bb[1] = x 
+  if x < bb[1] then
+    bb[1] = x
   end
-  if bb[3] < x then 
-    bb[3] = x 
+  if bb[3] < x then
+    bb[3] = x
   end
-  if y < bb[2] then 
-    bb[2] = y 
+  if y < bb[2] then
+    bb[2] = y
   end
-  if bb[4] < y then 
-    bb[4] = y 
+  if bb[4] < y then
+    bb[4] = y
   end
 end
 
@@ -245,46 +498,51 @@ end
 
 -- Emit stencil function body
 
-function emit_stencil_body(names)
+function emit_stencil_body(names, cvx)
   emit("gfx.stencil(function()")
-  for _, name in ipairs(names) do
-    emit("  bezier_fill(" .. name .. ")")
+  for i, name in ipairs(names) do
+    if cvx[i] then
+      emit("  convex_fill(" .. name .. ")")
+    else
+      emit("  concave_fill(" .. name .. ")")
+    end
   end
   emit("end, \"invert\", 1)")
   emit("gfx.setStencilTest(\"greater\", 0)")
+end
+
+-- Emit padded bbox rectangle
+
+function emit_bbox_rect(x1, y1, x2, y2)
+  local w = fmt((x2 - x1) + BBOX_PAD * PAIR)
+  local h = fmt((y2 - y1) + BBOX_PAD * PAIR)
+  emit(string.format(
+    "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
+    fmt(x1 - BBOX_PAD),
+    fmt(y1 - BBOX_PAD),
+    w,
+    h
+  ))
 end
 
 -- Emit stencil rectangle from bbox
 
 function emit_stencil_rect(fill, abs)
   local x1, y1, x2, y2 = bbox_from_abs(abs)
-  x1 = x1 - BBOX_PAD
-  y1 = y1 - BBOX_PAD
   emit_color(fill)
-  local w = fmt((x2 - x1) + BBOX_PAD * 2)
-  local h = fmt((y2 - y1) + BBOX_PAD * 2)
-  emit(string.format(
-    "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
-    fmt(x1),
-    fmt(y1),
-    w,
-    h
-  ))
+  emit_bbox_rect(x1, y1, x2, y2)
   emit("gfx.setStencilTest()")
-end
-
--- Emit stencil fill for multi-subpath path
-
-function emit_stencil(names, fill, abs)
-  emit_stencil_body(names)
-  emit_stencil_rect(fill, abs)
 end
 
 -- Emit single subpath fill
 
-function emit_single_fill(name, fill)
+function emit_single_fill(name, fill, convex)
   emit_color(fill)
-  emit("bezier_fill(" .. name .. ")")
+  if convex then
+    emit("convex_fill(" .. name .. ")")
+  else
+    emit("concave_fill(" .. name .. ")")
+  end
 end
 
 -- Emit stroke for all subpath names
@@ -292,7 +550,8 @@ end
 function emit_stroke(names, stroke_hex, stroke_w)
   emit_color(parse_hex(stroke_hex))
   if stroke_w then
-    emit("gfx.setLineWidth(" .. fmt(stroke_w) .. ")")
+    local sw = stroke_w * scale_factor
+    emit("gfx.setLineWidth(" .. fmt(sw) .. ")")
   end
   for _, name in ipairs(names) do
     emit("bezier_stroke(" .. name .. ")")
@@ -305,97 +564,123 @@ EMIT = { }
 
 -- Emit fill for path subpaths
 
-function emit_path_fill(names, fill, abs)
+function emit_path_fill(names, fill, abs, cvx)
   if not fill then
     return 
   end
   if 1 < #names then
-    emit_stencil(names, fill, abs)
+    emit_stencil_body(names, cvx)
+    emit_stencil_rect(fill, abs)
   else
-    emit_single_fill(names[1], fill)
+    emit_single_fill(names[1], fill, cvx[1])
   end
+end
+
+-- Parse path d-attr into subpaths
+
+function parse_subpaths(d)
+  local cmds = parse_path(d)
+  local abs = to_absolute(cmds)
+  return to_subpaths(abs), abs
 end
 
 -- Emit SVG path element
 
 function EMIT.path(node)
-  local fill = resolve_fill(node.attr)
-  local cmds = parse_path(node.attr.d)
-  local abs = to_absolute(cmds)
-  local subpaths = to_subpaths(abs)
-  local names = emit_all_subpaths(subpaths)
-  emit_path_fill(names, fill, abs)
-  if node.attr.stroke then
-    emit_stroke(
-      names,
-      node.attr.stroke,
-      tonumber(node.attr["stroke-width"])
-    )
+  local a = node.attr
+  local fill = resolve_fill(a)
+  local subs, abs = parse_subpaths(a.d)
+  local names, cvx = emit_all_subpaths(subs)
+  emit_path_fill(names, fill, abs, cvx)
+  if a.stroke then
+    local sw = tonumber(a["stroke-width"])
+    emit_stroke(names, a.stroke, sw)
   end
   emit("")
 end
 
--- Emit a simple filled shape
+-- Emit SVG rect element
 
-function emit_simple(node, draw_cmd)
+function EMIT.rect(node)
   local fill = resolve_fill(node.attr)
   if not fill then
     return 
   end
+  local a = node.attr
   emit_color(fill)
-  emit(draw_cmd(node.attr))
+  emit(string.format(
+    "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
+    fmt_attr(a.x),
+    fmt_attr(a.y),
+    fmt_attr(a.width),
+    fmt_attr(a.height)
+  ))
   emit("")
 end
 
--- Draw command for rect
+-- Emit SVG circle element
 
-function rect_cmd(attr)
-  return string.format(
-    "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
-    fmt_attr(attr.x),
-    fmt_attr(attr.y),
-    fmt_attr(attr.width),
-    fmt_attr(attr.height)
-  )
-end
-
--- Draw command for circle
-
-function circle_cmd(attr)
-  return string.format(
-    "gfx.circle(\"fill\", %s, %s, %s)",
-    fmt_attr(attr.cx),
-    fmt_attr(attr.cy),
-    fmt_attr(attr.r)
-  )
-end
-
--- Draw command for polygon
-
-function polygon_cmd(attr)
-  local coords = { }
-  for n in attr.points:gmatch("[%d%.%-]+") do
-    coords[#coords + 1] = fmt_attr(n)
+function EMIT.circle(node)
+  local fill = resolve_fill(node.attr)
+  if not fill then
+    return 
   end
-  return "gfx.polygon(\"fill\", " .. table.concat(coords, ", ")
-       .. ")"
+  local a = node.attr
+  emit_color(fill)
+  emit(string.format(
+    "gfx.circle(\"fill\", %s, %s, %s)",
+    fmt_attr(a.cx),
+    fmt_attr(a.cy),
+    fmt_attr(a.r)
+  ))
+  emit("")
 end
 
--- Simple shape emitters
+-- Parse polygon points to number array
 
-SHAPE_CMD = {
-  rect = rect_cmd,
-  circle = circle_cmd,
-  polygon = polygon_cmd
-}
-
-function emit_shape(node)
-  emit_simple(node, SHAPE_CMD[node.tag])
+function parse_pts(attr)
+  local nums = { }
+  for n in attr.points:gmatch("[%d%.%-]+") do
+    nums[#nums + 1] = tonumber(n)
+  end
+  return nums
 end
 
-EMIT.rect = emit_shape
-EMIT.circle = emit_shape
-EMIT.polygon = emit_shape
+-- Make a path command from type and two coords
+
+function make_cmd(t, x, y)
+  local c = { cmd = t }
+  c[1], c[2] = x, y
+  return c
+end
+
+-- Convert number array to path commands
+
+function pts_to_cmds(nums)
+  local cmds = { }
+  cmds[1] = make_cmd("M", nums[1], nums[2])
+  for i = 3, #nums, PAIR do
+    cmds[#cmds + 1] = make_cmd("L", nums[i], nums[i + 1])
+  end
+  cmds[#cmds + 1] = { cmd = "Z" }
+  return cmds
+end
+
+-- Emit SVG polygon as path with convexity
+
+function emit_polygon_el(node)
+  local fill = resolve_fill(node.attr)
+  if not fill then
+    return 
+  end
+  local nums = parse_pts(node.attr)
+  local cmds = pts_to_cmds(nums)
+  local name, convex = emit_one_subpath(cmds)
+  emit_single_fill(name, fill, convex)
+  emit("")
+end
+
+EMIT.polygon = emit_polygon_el
 
 -- Walk SVG tree in document order
 
@@ -409,6 +694,11 @@ function walk(node)
   end
 end
 
+-- ViewBox pattern
+
+VB_PAT = "([%d%.%-]+)%s+([%d%.%-]+)" .. 
+    "%s+([%d%.%-]+)%s+([%d%.%-]+)"
+
 -- Parse viewBox attribute
 
 function parse_viewbox(attr)
@@ -416,52 +706,11 @@ function parse_viewbox(attr)
   if not vb then
     return nil
   end
-  local x, y, w, h = vb:match(
-    "([%d%.%-]+)%s+([%d%.%-]+)%s+" .. 
-        "([%d%.%-]+)%s+([%d%.%-]+)"
-  )
+  local x, y, w, h = vb:match(VB_PAT)
   if not x then
     return nil
   end
   return tonumber(x), tonumber(y), tonumber(w), tonumber(h)
-end
-
--- Emit translate if viewBox has nonzero origin
-
-function emit_translate(vx, vy)
-  if vx ~= 0 or vy ~= 0 then
-    emit(string.format(
-      "gfx.translate(%s * scale, %s * scale)",
-      fmt(-vx),
-      fmt(-vy)
-    ))
-  end
-end
-
--- Emit scale from viewBox dimensions
-
-function emit_scale(vw, vh)
-  emit("local w, h = gfx.getDimensions()")
-  emit(string.format(
-    "local scale = math.min(w / %s, h / %s)",
-    fmt(vw),
-    fmt(vh)
-  ))
-end
-
--- Emit viewBox scaling preamble
-
-function emit_viewbox(svg)
-  local vx, vy, vw, vh = parse_viewbox(svg.attr)
-  if not vx then
-    return false
-  end
-  emit_scale(vw, vh)
-  emit("gfx.push()")
-  emit_translate(vx, vy)
-  emit("gfx.scale(scale)")
-  emit("")
-  return true
 end
 
 -- Read SVG file
@@ -495,11 +744,7 @@ function generate(svg, source_name)
   emit("local gfx = love.graphics")
   emit("")
   init_gradients(svg)
-  local has_vb = emit_viewbox(svg)
   walk(svg)
-  if has_vb then
-    emit("gfx.pop()")
-  end
   return table.concat(out, "\n") .. "\n"
 end
 
@@ -525,13 +770,17 @@ end
 input = arg[1]
 if not input then
   io.stderr:write(
-    "Usage: lua transpile.lua input.svg [output.lua]\n"
+    "Usage: lua transpile.lua in.svg [out.lua w h]\n"
   )
   os.exit(1)
 end
 
 output = output_path(input, arg[2])
+local tw = tonumber(arg[3]) or DEFAULT_W
+local th = tonumber(arg[4]) or DEFAULT_H
 local svg = load_svg(input)
+compute_scale(svg, tw, th)
 local code = generate(svg, input)
 write_output(code, output)
-io.stderr:write("OK: " .. input .. " -> " .. output .. "\n")
+local msg = "OK: " .. input .. " -> " .. output
+io.stderr:write(msg .. "\n")

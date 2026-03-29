@@ -134,7 +134,9 @@ ABS = { }
 function reflect_ctrl(state)
   if state.last_ctrl then
     local lc = state.last_ctrl
-    return DOUBLE * state.cx - lc[1], DOUBLE * state.cy - lc[2]
+    local cx, cy = state.cx, state.cy
+    return DOUBLE * cx - lc[1],
+      DOUBLE * cy - lc[2]
   end
   return state.cx, state.cy
 end
@@ -189,21 +191,22 @@ function new_cubic()
   return { cmd = "C" }
 end
 
+-- Set state endpoint and last control point
+
+function set_ctrl(state, cmd)
+  state.cx, state.cy = cmd[5], cmd[6]
+  state.last_ctrl = { cmd[3], cmd[4] }
+end
+
 -- Cubic Bezier
 
 function ABS.C(data, state)
   local ox, oy = state.ox, state.oy
-  local x2, y2 = data[3] + ox, data[4] + oy
-  local x, y = data[5] + ox, data[6] + oy
-  state.cx, state.cy = x, y
-  state.last_ctrl = {
-    x2,
-    y2
-  }
   local r = new_cubic()
   r[1], r[2] = data[1] + ox, data[2] + oy
-  r[3], r[4] = x2, y2
-  r[5], r[6] = x, y
+  r[3], r[4] = data[3] + ox, data[4] + oy
+  r[5], r[6] = data[5] + ox, data[6] + oy
+  set_ctrl(state, r)
   return r
 end
 
@@ -212,17 +215,11 @@ end
 function ABS.S(data, state)
   local ox, oy = state.ox, state.oy
   local rx, ry = reflect_ctrl(state)
-  local x2, y2 = data[1] + ox, data[2] + oy
-  local x, y = data[3] + ox, data[4] + oy
-  state.cx, state.cy = x, y
-  state.last_ctrl = {
-    x2,
-    y2
-  }
   local r = new_cubic()
   r[1], r[2] = rx, ry
-  r[3], r[4] = x2, y2
-  r[5], r[6] = x, y
+  r[3], r[4] = data[1] + ox, data[2] + oy
+  r[5], r[6] = data[3] + ox, data[4] + oy
+  set_ctrl(state, r)
   return r
 end
 
@@ -279,16 +276,22 @@ function append_result(abs, result)
   end
 end
 
--- Convert all commands to absolute
+-- Initial absolute conversion state
 
-function to_absolute(cmds)
-  local abs = { }
-  local state = {
+function abs_state()
+  return {
     cx = 0,
     cy = 0,
     sx = 0,
     sy = 0
   }
+end
+
+-- Convert all commands to absolute
+
+function to_absolute(cmds)
+  local abs = { }
+  local state = abs_state()
   for _, cmd in ipairs(cmds) do
     append_result(abs, convert_cmd(cmd, state))
   end
@@ -311,68 +314,86 @@ function to_subpaths(abs)
   return subpaths
 end
 
+-- Length of 2D vector
+
+function vec_len(x, y)
+  return math.sqrt(x * x + y * y)
+end
+
 -- Angle between two vectors
 
 function arc_angle(ux, uy, vx, vy)
   local dot = ux * vx + uy * vy
-  local len = math.sqrt(ux * ux + uy * uy) * math.sqrt(
-    vx * vx + vy * vy
-  )
-  if len == 0 then
-    return 0
-  end
-  local val = math.min(1, math.max(-1, dot / len))
-  local a = math.acos(val)
-  if ux * vy - uy * vx < 0 then
-    a = -a
-  end
+  local len = vec_len(ux, uy) * vec_len(vx, vy)
+  if len == 0 then 
+    return 0 
+ end
+  local cl = math.max(-1, math.min(1, dot / len))
+  local a = math.acos(cl)
+  if ux * vy - uy * vx < 0 then a = -a 
+ end
   return a
 end
 
 -- Scale radii if too small
 
 function fix_radii(arc)
-  local lam = (arc.x1p * arc.x1p) / (arc.rx * arc.rx) + 
-    (arc.y1p * arc.y1p) / (arc.ry * arc.ry)
+  local xp = arc.x1p * arc.x1p
+  local yp = arc.y1p * arc.y1p
+  local rx2 = arc.rx * arc.rx
+  local ry2 = arc.ry * arc.ry
+  local lam = xp / rx2 + yp / ry2
   if 1 < lam then
     local sl = math.sqrt(lam)
-    arc.rx, arc.ry = arc.rx * sl, arc.ry * sl
+    arc.rx = arc.rx * sl
+    arc.ry = arc.ry * sl
   end
+end
+
+-- Square root ratio for arc center
+
+function sq_ratio(rx2, ry2, xp, yp)
+  local num = rx2 * ry2 - rx2 * yp - ry2 * xp
+  local den = rx2 * yp + ry2 * xp
+  if 0 < den and 0 < num then
+    return math.sqrt(num / den)
+  end
+  return 0
 end
 
 -- Compute sign factor for center
 
 function arc_sq(arc)
   local rx, ry = arc.rx, arc.ry
-  local x1p, y1p = arc.x1p, arc.y1p
-  local num = (rx * rx * ry * ry - rx * rx * y1p * y1p) - ry * 
-      ry * x1p * x1p
-  local den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
-  local sq = 0
-  if 0 < den and 0 < num then
-    sq = math.sqrt(num / den)
-  end
-  if arc.fa == arc.fs then
-    sq = -sq
-  end
+  local xp = arc.x1p * arc.x1p
+  local yp = arc.y1p * arc.y1p
+  local sq = sq_ratio(rx * rx, ry * ry, xp, yp)
+  if arc.fa == arc.fs then sq = -sq end
   return sq
 end
 
--- Compute center from rotated midpoint
+-- Compute rotated midpoint
 
-function arc_find_center(arc)
+function arc_rot_mid(arc)
   local dx = (arc.x1 - arc.x2) * HALF
   local dy = (arc.y1 - arc.y2) * HALF
   arc.x1p = arc.cp * dx + arc.sp * dy
   arc.y1p = -arc.sp * dx + arc.cp * dy
   fix_radii(arc)
+end
+
+-- Compute center from rotated midpoint
+
+function arc_find_center(arc)
+  arc_rot_mid(arc)
   local sq = arc_sq(arc)
   arc.cxp = sq * arc.rx * arc.y1p / arc.ry
   arc.cyp = -sq * arc.ry * arc.x1p / arc.rx
   local mx = (arc.x1 + arc.x2) * HALF
   local my = (arc.y1 + arc.y2) * HALF
-  arc.cx = (arc.cp * arc.cxp - arc.sp * arc.cyp) + mx
-  arc.cy = arc.sp * arc.cxp + arc.cp * arc.cyp + my
+  local cp, sp = arc.cp, arc.sp
+  arc.cx = (cp * arc.cxp - sp * arc.cyp) + mx
+  arc.cy = sp * arc.cxp + cp * arc.cyp + my
 end
 
 -- Compute start angle and sweep
@@ -393,33 +414,34 @@ end
 -- Compute endpoint at angle th
 
 function arc_point(arc, th)
-  local cos_th, sin_th = math.cos(th), math.sin(th)
-  local x = arc.cx + arc.cp * arc.rx * cos_th - arc.sp * arc.ry
-       * sin_th
-  local y = arc.cy + arc.sp * arc.rx * cos_th + arc.cp * arc.ry
-       * sin_th
-  local dx = -arc.rx * sin_th
-  local dy = arc.ry * cos_th
-  return x, y, dx, dy
+  local ct = math.cos(th)
+  local st = math.sin(th)
+  local rx, ry = arc.rx, arc.ry
+  local cp, sp = arc.cp, arc.sp
+  local x = arc.cx + cp * rx * ct - sp * ry * st
+  local y = arc.cy + sp * rx * ct + cp * ry * st
+  return x, y, -rx * st, ry * ct
 end
 
--- Rotated control point offset for arc segment
+-- Rotated control point offset
 
-function arc_cp(arc, t, dx, dy, sign)
-  return sign * (arc.cp * t * dx - arc.sp * t * dy), sign * 
-    (arc.sp * t * dx + arc.cp * t * dy)
+function arc_cp(arc, t, dx, dy)
+  local cx = arc.cp * t * dx - arc.sp * t * dy
+  local cy = arc.sp * t * dx + arc.cp * t * dy
+  return cx, cy
 end
 
 -- One cubic segment from th to th+step
 
 function arc_one_seg(arc, th, step, t)
   local x1, y1, dx1, dy1 = arc_point(arc, th)
-  local x2, y2, dx2, dy2 = arc_point(arc, th + step)
-  local c1x, c1y = arc_cp(arc, t, dx1, dy1, 1)
-  local c2x, c2y = arc_cp(arc, t, dx2, dy2, -1)
+  local x2, y2, dx2, dy2 = arc_point(
+    arc, th + step)
+  local c1x, c1y = arc_cp(arc, t, dx1, dy1)
+  local c2x, c2y = arc_cp(arc, t, dx2, dy2)
   local r = new_cubic()
   r[1], r[2] = x1 + c1x, y1 + c1y
-  r[3], r[4] = x2 + c2x, y2 + c2y
+  r[3], r[4] = x2 - c2x, y2 - c2y
   r[5], r[6] = x2, y2
   return r
 end
@@ -434,7 +456,8 @@ end
 -- Generate all cubic segments for arc
 
 function arc_emit_segments(arc)
-  local segs = math.ceil(math.abs(arc.dth) / QUARTER_TURN)
+  local dth = math.abs(arc.dth)
+  local segs = math.ceil(dth / QUARTER_TURN)
   local step = arc.dth / segs
   local t = arc_tan_coeff(step)
   local result = { }
@@ -463,11 +486,8 @@ function arc_to_cubics(arc)
     return { }
   end
   if arc.rx == 0 or arc.ry == 0 then
-    return { {
-      cmd = "L",
-      arc.x2,
-      arc.y2
-    } }
+    local l = { cmd = "L", arc.x2, arc.y2 }
+    return { l }
   end
   arc_prepare(arc)
   return arc_emit_segments(arc)
