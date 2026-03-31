@@ -15,9 +15,18 @@ LÖVE2D (Compy) for running the output files.
 Place `transpile.lua`, `svgxml.lua`, `svgpath.lua` and
 your SVG file in the same directory. Run:
 
-    lua5.1 transpile.lua input.svg output.lua
+    lua transpile.lua input.svg output.lua 800 480
 
-If output path is omitted, writes to `input.lua`.
+Arguments:
+
+- `input.svg` — source SVG file (required)
+- `output.lua` — output file (default: `input.lua`)
+- `800` — target width (default: 800)
+- `480` — target height (default: 480)
+
+Coordinates are scaled at transpile time to fit the
+target size. The scale factor is computed from the
+SVG viewBox attribute: `min(w/vw, h/vh)`.
 
 ### Run on Compy
 
@@ -31,46 +40,47 @@ Compy project. From the console:
 
 ### Transpiler (desktop)
 
-- `transpile.lua` — main script, reads SVG, generates Lua
+- `transpile.lua` — main script, reads SVG, generates
+  Lua with coordinates pre-scaled to target size
 - `svgxml.lua` — XML parser, preserves element order
-- `svgpath.lua` — SVG path parser, converts arcs to cubics
+- `svgpath.lua` — SVG path parser, converts arcs to
+  cubics
 
 ### Runtime (Compy)
 
 - `bezier.lua` — renders paths with love.graphics,
   approximates cubic Bezier at draw time via
-  de Casteljau subdivision, triangulates concave
-  polygons, uses stencil for evenodd fill rule
+  de Casteljau subdivision, caches flattened
+  coordinates and triangulation between frames,
+  uses stencil for evenodd fill rule
+
+## Runtime Optimization
+
+Convexity is checked at transpile time. Each subpath
+is tagged as convex or concave in the generated code.
+
+- Convex paths: `gfx.polygon` directly, no
+  triangulation
+- Concave paths: `love.math.triangulate` once on
+  first frame, cached for subsequent frames
+- All paths: flatten once on first frame, cached in
+  `flat_cache`
 
 ## Bezier API
 
-The generated Lua files call two functions:
+The generated Lua files call these functions from
+`bezier.lua`:
 
-    bezier.fill(subpaths)
-    bezier.stroke(subpaths)
+    convex_fill(subpath) — draw convex polygon
+    concave_fill(subpath) — triangulate + draw
+    bezier_stroke(subpath) — stroke path as line
 
-`subpaths` is an array of subpaths. Each subpath is an
-array of commands. Each command is a table:
+Each subpath is an array of commands:
 
-    { "M", x, y }              — move to
-    { "L", x, y }              — line to
+    { "M", x, y } — move to
+    { "L", x, y } — line to
     { "C", x1,y1, x2,y2, x,y } — cubic Bezier
-    { "Z" }                    — close path
-
-Example:
-
-    local p = {
-      {
-        { "M", 10, 20 },
-        { "L", 30, 40 },
-        { "C", 50, 60, 70, 80, 90, 100 },
-        { "Z" },
-      },
-    }
-    bezier.fill(p)
-
-For paths with multiple subpaths (holes, cutouts),
-bezier.fill uses stencil with evenodd rule.
+    { "Z" } — close path
 
 ## Supported SVG Elements
 
@@ -81,7 +91,7 @@ bezier.fill uses stencil with evenodd rule.
 - `polygon`
 - `g` (groups, nested)
 - `linearGradient` — averaged to solid color
-- `viewBox` — scaled to fit window
+- `viewBox` — scaled at transpile time
 - `fill-rule` — always evenodd
 
 ## Not Supported
@@ -100,4 +110,3 @@ Three example SVG files for testing:
 - `sailboat-silhouette.svg` — multiple filled paths
 - `lego-man2x.svg` — paths, rects, circles, polygons,
   gradients
-  
