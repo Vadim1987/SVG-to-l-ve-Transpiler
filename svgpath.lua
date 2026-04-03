@@ -396,6 +396,17 @@ function arc_find_center(arc)
   arc.cy = sp * arc.cxp + cp * arc.cyp + my
 end
 
+-- Correct sweep angle sign per SVG spec
+
+function fix_sweep(arc)
+  if arc.fs == 0 and arc.dth > 0 then
+    arc.dth = arc.dth - DOUBLE * math.pi
+  end
+  if arc.fs == 1 and arc.dth < 0 then
+    arc.dth = arc.dth + DOUBLE * math.pi
+  end
+end
+
 -- Compute start angle and sweep
 
 function arc_find_angles(arc)
@@ -409,6 +420,7 @@ function arc_find_angles(arc)
     -ux - DOUBLE * arc.cxp / rx,
     -uy - DOUBLE * arc.cyp / ry
   )
+  fix_sweep(arc)
 end
 
 -- Compute endpoint at angle th
