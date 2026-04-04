@@ -2,7 +2,9 @@
 
 -- Runtime SVG path renderer for Compy.
 
--- Flatten once, cache. Convex/concave dispatch.
+-- Flatten once, cache. Convex/concave/selfx dispatch.
+
+require("bentley_ottmann")
 
 gfx = love.graphics
 
@@ -256,6 +258,51 @@ function concave_fill(path)
     draw_tris(tris)
   else
     gfx.polygon("fill", pts)
+  end
+end
+
+-- Self-intersection decomposition cache
+
+selfx_cache = { }
+
+-- Fill one decomposed sub-polygon
+
+function fill_sub_poly(p)
+  if #p.pts < MIN_POLY then
+    return 
+  end
+  if p.convex then
+    gfx.polygon("fill", p.pts)
+    return 
+  end
+  local ok, t = pcall(love.math.triangulate, p.pts)
+  if ok then
+    draw_tris(t)
+  end
+end
+
+-- Get cached decomposition or compute
+
+function get_selfx_polys(path, pts, n)
+  local polys = selfx_cache[path]
+  if polys then
+    return polys
+  end
+  polys = bo_decompose_classified(pts, n)
+  selfx_cache[path] = polys
+  return polys
+end
+
+-- Fill self-intersecting path: decompose + fill
+
+function selfx_fill(path)
+  local pts, n = get_flat(path)
+  if n < MIN_POLY then
+    return 
+  end
+  local polys = get_selfx_polys(path, pts, n)
+  for _, p in ipairs(polys) do
+    fill_sub_poly(p)
   end
 end
 

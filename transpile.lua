@@ -4,15 +4,13 @@
 
 require("svgxml")
 require("svgpath")
+require("bentley_ottmann")
 
 -- Transpile-time flatten for convexity check
 
 FLAT_TOL = 0.5
 DEGEN_TOL = 0.001
 T_MAX_DEPTH = 6
-HALF = 0.5
-PAIR = 2
-MIN_VERTICES = 3
 
 -- Flatness test
 
@@ -157,53 +155,20 @@ function flatten_subpath(subpath)
   return pts
 end
 
--- Cross product at vertex i
+-- Classify subpath: flatten, check selfx/convex
 
-function cross_at(pts, i, n)
-  local i2 = (i % n) + 1
-  local i3 = (i2 % n) + 1
-  local ax = pts[i2 * PAIR - 1] - pts[i * PAIR - 1]
-  local ay = pts[i2 * PAIR] - pts[i * PAIR]
-  local bx = pts[i3 * PAIR - 1] - pts[i2 * PAIR - 1]
-  local by = pts[i3 * PAIR] - pts[i2 * PAIR]
-  return ax * by - ay * bx
-end
+MIN_SELFX_COUNT = 2
 
--- Check if sign breaks convexity
-
-convex_sign = 0
-
-function check_sign(cp)
-  if cp == 0 then
-    return true
+function classify_subpath(subpath)
+  local pts = flatten_subpath(subpath)
+  local xc = bo_count_selfx(pts, #pts)
+  if MIN_SELFX_COUNT <= xc then
+    return "selfx"
   end
-  if convex_sign == 0 then
-    convex_sign = cp
-    return true
+  if bo_is_convex(pts) then
+    return "convex"
   end
-  return (0 < convex_sign) == (0 < cp)
-end
-
--- Check polygon convexity via determinants
-
-function is_convex(pts)
-  local n = #pts / PAIR
-  if n < MIN_VERTICES then
-    return true
-  end
-  convex_sign = 0
-  for i = 1, n do
-    if not check_sign(cross_at(pts, i, n)) then
-      return false
-    end
-  end
-  return true
-end
-
--- Check subpath convexity: flatten then check
-
-function subpath_convex(subpath)
-  return is_convex(flatten_subpath(subpath))
+  return "concave"
 end
 
 -- Scale factor for transpile-time scaling
@@ -259,7 +224,7 @@ function expand_hex(hex)
   return hex
 end
 
--- Parse 6-char hex to RGBA table
+-- Parse hex color to RGBA table
 
 function parse_hex(hex)
   hex = expand_hex(hex)
@@ -344,10 +309,10 @@ end
 
 function resolve_fill(attr)
   local fill = attr.fill
-  if not fill then
+  if not fill or fill == "currentColor" then
     return BLACK
   end
-  if fill == "none" then
+  if fill == "none" or fill == "inherit" then
     return nil
   end
   local ref = fill:match("url%(#(.-)%)")
@@ -431,30 +396,29 @@ function emit_scaled_cmds(subpath)
   end
 end
 
--- Emit one subpath with convexity tag
+-- Emit one subpath with classification tag
 
 function emit_one_subpath(subpath)
   shape_n = shape_n + 1
   local name = "p" .. shape_n
-  local cvx = subpath_convex(subpath)
-  local tag = cvx and "-- convex" or "-- concave"
-  emit("local " .. name .. " = { " .. tag)
+  local kind = classify_subpath(subpath)
+  emit("local " .. name .. " = { -- " .. kind)
   emit_scaled_cmds(subpath)
   emit("}")
-  return name, cvx
+  return name, kind
 end
 
 -- Emit all subpaths as separate variables
 
 function emit_all_subpaths(subpaths)
   local names = { }
-  local cvx = { }
+  local kinds = { }
   for _, sp in ipairs(subpaths) do
-    local name, convex = emit_one_subpath(sp)
+    local name, kind = emit_one_subpath(sp)
     names[#names + 1] = name
-    cvx[#cvx + 1] = convex
+    kinds[#kinds + 1] = kind
   end
-  return names, cvx
+  return names, kinds
 end
 
 -- Bounding box accumulator
@@ -496,16 +460,21 @@ function bbox_from_abs(abs)
   return bb[1], bb[2], bb[3], bb[4]
 end
 
+-- Fill call for subpath by kind
+
+FILL_FN = {
+  convex = "convex_fill",
+  concave = "concave_fill",
+  selfx = "selfx_fill"
+}
+
 -- Emit stencil function body
 
-function emit_stencil_body(names, cvx)
+function emit_stencil_body(names, kinds)
   emit("gfx.stencil(function()")
   for i, name in ipairs(names) do
-    if cvx[i] then
-      emit("  convex_fill(" .. name .. ")")
-    else
-      emit("  concave_fill(" .. name .. ")")
-    end
+    local fn = FILL_FN[kinds[i]]
+    emit("  " .. fn .. "(" .. name .. ")")
   end
   emit("end, \"invert\", 1)")
   emit("gfx.setStencilTest(\"greater\", 0)")
@@ -536,13 +505,10 @@ end
 
 -- Emit single subpath fill
 
-function emit_single_fill(name, fill, convex)
+function emit_single_fill(name, fill, kind)
   emit_color(fill)
-  if convex then
-    emit("convex_fill(" .. name .. ")")
-  else
-    emit("concave_fill(" .. name .. ")")
-  end
+  local fn = FILL_FN[kind]
+  emit(fn .. "(" .. name .. ")")
 end
 
 -- Emit stroke for all subpath names
@@ -564,15 +530,15 @@ EMIT = { }
 
 -- Emit fill for path subpaths
 
-function emit_path_fill(names, fill, abs, cvx)
+function emit_path_fill(names, fill, abs, kinds)
   if not fill then
     return 
   end
   if 1 < #names then
-    emit_stencil_body(names, cvx)
+    emit_stencil_body(names, kinds)
     emit_stencil_rect(fill, abs)
   else
-    emit_single_fill(names[1], fill, cvx[1])
+    emit_single_fill(names[1], fill, kinds[1])
   end
 end
 
@@ -590,8 +556,8 @@ function EMIT.path(node)
   local a = node.attr
   local fill = resolve_fill(a)
   local subs, abs = parse_subpaths(a.d)
-  local names, cvx = emit_all_subpaths(subs)
-  emit_path_fill(names, fill, abs, cvx)
+  local names, kinds = emit_all_subpaths(subs)
+  emit_path_fill(names, fill, abs, kinds)
   if a.stroke then
     local sw = tonumber(a["stroke-width"])
     emit_stroke(names, a.stroke, sw)
@@ -666,7 +632,7 @@ function pts_to_cmds(nums)
   return cmds
 end
 
--- Emit SVG polygon as path with convexity
+-- Emit SVG polygon as path with classification
 
 function emit_polygon_el(node)
   local fill = resolve_fill(node.attr)
@@ -675,8 +641,8 @@ function emit_polygon_el(node)
   end
   local nums = parse_pts(node.attr)
   local cmds = pts_to_cmds(nums)
-  local name, convex = emit_one_subpath(cmds)
-  emit_single_fill(name, fill, convex)
+  local name, kind = emit_one_subpath(cmds)
+  emit_single_fill(name, fill, kind)
   emit("")
 end
 
