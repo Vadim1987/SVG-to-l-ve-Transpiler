@@ -37,14 +37,14 @@ sd_mid[5], sd_mid[6] = 0, 0
 -- Compute de Casteljau midpoints
 
 function sd_mids(c)
-  local bx = (c[3] + c[5]) * HALF
-  local by = (c[4] + c[6]) * HALF
-  sd_mid[1] = (c[1] + c[3]) * HALF
-  sd_mid[2] = (c[2] + c[4]) * HALF
-  sd_mid[3] = (sd_mid[1] + bx) * HALF
-  sd_mid[4] = (sd_mid[2] + by) * HALF
-  sd_mid[5] = (bx + (c[5] + c[7]) * HALF) * HALF
-  sd_mid[6] = (by + (c[6] + c[8]) * HALF) * HALF
+  local bx = (c[3] + c[5]) * 0.5
+  local by = (c[4] + c[6]) * 0.5
+  sd_mid[1] = (c[1] + c[3]) * 0.5
+  sd_mid[2] = (c[2] + c[4]) * 0.5
+  sd_mid[3] = (sd_mid[1] + bx) * 0.5
+  sd_mid[4] = (sd_mid[2] + by) * 0.5
+  sd_mid[5] = (bx + (c[5] + c[7]) * 0.5) * 0.5
+  sd_mid[6] = (by + (c[6] + c[8]) * 0.5) * 0.5
 end
 
 -- Fill left and right curve halves
@@ -59,14 +59,14 @@ end
 function sd_right(c, rc, mx, my)
   rc[1], rc[2] = mx, my
   rc[3], rc[4] = sd_mid[5], sd_mid[6]
-  rc[5] = (c[5] + c[7]) * HALF
-  rc[6] = (c[6] + c[8]) * HALF
+  rc[5] = (c[5] + c[7]) * 0.5
+  rc[6] = (c[6] + c[8]) * 0.5
   rc[7], rc[8] = c[7], c[8]
 end
 
 function sd_halves(c, lc, rc)
-  local mx = (sd_mid[3] + sd_mid[5]) * HALF
-  local my = (sd_mid[4] + sd_mid[6]) * HALF
+  local mx = (sd_mid[3] + sd_mid[5]) * 0.5
+  local my = (sd_mid[4] + sd_mid[6]) * 0.5
   sd_left(c, lc, mx, my)
   sd_right(c, rc, mx, my)
 end
@@ -636,17 +636,36 @@ end
 
 function emit_polygon_el(node)
   local fill = resolve_fill(node.attr)
-  if not fill then
-    return 
-  end
-  local nums = parse_pts(node.attr)
+  local a = node.attr
+  local nums = parse_pts(a)
   local cmds = pts_to_cmds(nums)
   local name, kind = emit_one_subpath(cmds)
-  emit_single_fill(name, fill, kind)
+  if fill then
+    emit_single_fill(name, fill, kind)
+  end
+  if a.stroke then
+    local sw = tonumber(a["stroke-width"])
+    emit_stroke({ name }, a.stroke, sw)
+  end
   emit("")
 end
 
 EMIT.polygon = emit_polygon_el
+
+-- Emit SVG line element as stroke
+
+function EMIT.line(node)
+  local a = node.attr
+  local cmds = { }
+  cmds[1] = make_cmd("M", tonumber(a.x1), tonumber(a.y1))
+  cmds[2] = make_cmd("L", tonumber(a.x2), tonumber(a.y2))
+  local name = emit_one_subpath(cmds)
+  if a.stroke then
+    local sw = tonumber(a["stroke-width"])
+    emit_stroke({ name }, a.stroke, sw)
+  end
+  emit("")
+end
 
 -- Walk SVG tree in document order
 

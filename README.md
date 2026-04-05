@@ -133,14 +133,15 @@ Each subpath is an array of commands:
 - `rect`
 - `circle`
 - `polygon`
+- `line`
 - `g` (groups, nested)
 - `linearGradient` — averaged to solid color
 - `viewBox` — scaled at transpile time
-- `fill - rule` — always evenodd
+- `fill-rule` — always evenodd
 
 ## Not Supported
 
-- `fill-rule = "nonzero"`
+- `fill-rule="nonzero"`
 - `text`, `image`, `use`, `clipPath`, `mask`
 - `stroke-dasharray`, `opacity`
 - `transform` on elements

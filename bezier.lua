@@ -8,12 +8,11 @@ require("bentley_ottmann")
 
 gfx = love.graphics
 
-MAX_DEPTH = 6
-FLAT_TOL = 0.5
-DEGEN_TOL = 0.001
-HALF = 0.5
-MIN_POLY = 6
-MIN_LINE = 4
+local MAX_DEPTH = 6
+local FLAT_TOL = 0.5
+local DEGEN_TOL = 0.001
+local MIN_POLY = 6
+local MIN_LINE = 4
 
 -- Flat coordinate buffer, reused across calls
 
@@ -75,14 +74,14 @@ sp_mid[5], sp_mid[6] = 0, 0
 -- Compute split midpoints
 
 function split_mids(p)
-  local bx = (p[3] + p[5]) * HALF
-  local by = (p[4] + p[6]) * HALF
-  sp_mid[1] = (p[1] + p[3]) * HALF
-  sp_mid[2] = (p[2] + p[4]) * HALF
-  sp_mid[3] = (sp_mid[1] + bx) * HALF
-  sp_mid[4] = (sp_mid[2] + by) * HALF
-  sp_mid[5] = (bx + (p[5] + p[7]) * HALF) * HALF
-  sp_mid[6] = (by + (p[6] + p[8]) * HALF) * HALF
+  local bx = (p[3] + p[5]) * 0.5
+  local by = (p[4] + p[6]) * 0.5
+  sp_mid[1] = (p[1] + p[3]) * 0.5
+  sp_mid[2] = (p[2] + p[4]) * 0.5
+  sp_mid[3] = (sp_mid[1] + bx) * 0.5
+  sp_mid[4] = (sp_mid[2] + by) * 0.5
+  sp_mid[5] = (bx + (p[5] + p[7]) * 0.5) * 0.5
+  sp_mid[6] = (by + (p[6] + p[8]) * 0.5) * 0.5
 end
 
 -- Fill left half from curve and midpoint
@@ -99,8 +98,8 @@ end
 function fill_right(p, r, mx, my)
   r[1], r[2] = mx, my
   r[3], r[4] = sp_mid[5], sp_mid[6]
-  r[5] = (p[5] + p[7]) * HALF
-  r[6] = (p[6] + p[8]) * HALF
+  r[5] = (p[5] + p[7]) * 0.5
+  r[6] = (p[6] + p[8]) * 0.5
   r[7], r[8] = p[7], p[8]
 end
 
@@ -108,8 +107,8 @@ end
 
 function split_at(p, depth)
   local l, r = split_l[depth], split_r[depth]
-  local mx = (sp_mid[3] + sp_mid[5]) * HALF
-  local my = (sp_mid[4] + sp_mid[6]) * HALF
+  local mx = (sp_mid[3] + sp_mid[5]) * 0.5
+  local my = (sp_mid[4] + sp_mid[6]) * 0.5
   fill_left(p, l, mx, my)
   fill_right(p, r, mx, my)
   return l, r

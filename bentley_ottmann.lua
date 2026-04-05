@@ -10,7 +10,6 @@ PAIR = 2
 BO_EPS = 1e-9
 BO_T_EPS = 0.01
 TWO_PI = 2 * math.pi
-HALF = 0.5
 MIN_SELFX = 8
 MIN_VERTS = 3
 KEY_MULT = 10000
@@ -60,7 +59,7 @@ function bo_y_at_x(s, x)
   local x1, y1, x2, y2 = bo_orient(s)
   local dx = x2 - x1
   if math.abs(dx) < BO_EPS then
-    return (y1 + y2) * HALF
+    return (y1 + y2) * 0.5
   end
   local t = (x - x1) / dx
   return y1 + t * (y2 - y1)
@@ -553,8 +552,8 @@ end
 -- Snap vertex to grid for identity
 
 function bo_snap(v)
-  local kx = math.floor(v[1] / BO_SNAP + HALF)
-  local ky = math.floor(v[2] / BO_SNAP + HALF)
+  local kx = math.floor(v[1] / BO_SNAP + 0.5)
+  local ky = math.floor(v[2] / BO_SNAP + 0.5)
   return kx * BO_SNAP, ky * BO_SNAP
 end
 
@@ -766,7 +765,7 @@ function bo_signed_area(pts)
   for i = 1, n do
     area = area + bo_area_step(pts, i, (i % n) + 1)
   end
-  return area * HALF
+  return area * 0.5
 end
 
 -- Build face record from vertex list

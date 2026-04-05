@@ -4,7 +4,6 @@
 
 -- Converts arcs to cubic Bezier at transpile time.
 
-HALF = 0.5
 DOUBLE = 2
 DEG_TO_RAD = math.pi / 180
 QUARTER_TURN = math.pi / 2
@@ -375,8 +374,8 @@ end
 -- Compute rotated midpoint
 
 function arc_rot_mid(arc)
-  local dx = (arc.x1 - arc.x2) * HALF
-  local dy = (arc.y1 - arc.y2) * HALF
+  local dx = (arc.x1 - arc.x2) * 0.5
+  local dy = (arc.y1 - arc.y2) * 0.5
   arc.x1p = arc.cp * dx + arc.sp * dy
   arc.y1p = -arc.sp * dx + arc.cp * dy
   fix_radii(arc)
@@ -389,8 +388,8 @@ function arc_find_center(arc)
   local sq = arc_sq(arc)
   arc.cxp = sq * arc.rx * arc.y1p / arc.ry
   arc.cyp = -sq * arc.ry * arc.x1p / arc.rx
-  local mx = (arc.x1 + arc.x2) * HALF
-  local my = (arc.y1 + arc.y2) * HALF
+  local mx = (arc.x1 + arc.x2) * 0.5
+  local my = (arc.y1 + arc.y2) * 0.5
   local cp, sp = arc.cp, arc.sp
   arc.cx = (cp * arc.cxp - sp * arc.cyp) + mx
   arc.cy = sp * arc.cxp + cp * arc.cyp + my
