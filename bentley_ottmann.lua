@@ -48,14 +48,13 @@ end
 local function bo_orient(s)
   if s[1] < s[3] then
     return s[1], s[2], s[3], s[4]
-  end
-  if s[1] > s[3] then
+  elseif s[1] > s[3] then
+    return s[3], s[4], s[1], s[2]
+  elseif s[2] <= s[4] then
+    return s[1], s[2], s[3], s[4]
+  else
     return s[3], s[4], s[1], s[2]
   end
-  if s[2] <= s[4] then
-    return s[1], s[2], s[3], s[4]
-  end
-  return s[3], s[4], s[1], s[2]
 end
 
 -- Compute y on segment at given x
@@ -65,9 +64,10 @@ local function bo_y_at_x(s, x)
   local dx = x2 - x1
   if math.abs(dx) < BO_EPS then
     return (y1 + y2) * 0.5
+  else
+    local t = (x - x1) / dx
+    return y1 + t * (y2 - y1)
   end
-  local t = (x - x1) / dx
-  return y1 + t * (y2 - y1)
 end
 
 -- Cross product: seg s against point (px, py)
@@ -127,11 +127,11 @@ end
 local function bo_straddle()
   if bo_d[1] * bo_d[2] > BO_EPS then
     return false
-  end
-  if bo_d[3] * bo_d[4] > BO_EPS then
+  elseif bo_d[3] * bo_d[4] > BO_EPS then
     return false
+  else
+    return true
   end
-  return true
 end
 
 -- Compute intersection coords from bo_d buffer
@@ -140,11 +140,12 @@ local function bo_xpt_coords(b)
   local denom = bo_d[1] - bo_d[2]
   if math.abs(denom) < BO_EPS then
     return nil
+  else
+    local t = bo_d[1] / denom
+    local ix = b[1] + t * (b[3] - b[1])
+    local iy = b[2] + t * (b[4] - b[2])
+    return ix, iy
   end
-  local t = bo_d[1] / denom
-  local ix = b[1] + t * (b[3] - b[1])
-  local iy = b[2] + t * (b[4] - b[2])
-  return ix, iy
 end
 
 -- Compute intersection point of segments a, b
@@ -153,8 +154,9 @@ local function bo_intersect(a, b)
   bo_cross_4(a, b)
   if not bo_straddle() then
     return nil
+  else
+    return bo_xpt_coords(b)
   end
-  return bo_xpt_coords(b)
 end
 
 -- Event types
@@ -195,11 +197,11 @@ end
 local function bo_ev_lt(a, b)
   if a.x ~= b.x then
     return a.x < b.x
-  end
-  if a.y ~= b.y then
+  elseif a.y ~= b.y then
     return a.y < b.y
+  else
+    return a.kind < b.kind
   end
-  return a.kind < b.kind
 end
 
 -- Insert event into sorted event queue
@@ -839,11 +841,11 @@ end
 local function bo_check_csign(cp, sign)
   if cp == 0 then
     return true
-  end
-  if sign == 0 then
+  elseif sign == 0 then
     return true
+  else
+    return (0 < sign) == (0 < cp)
   end
-  return (0 < sign) == (0 < cp)
 end
 
 -- Update convexity sign accumulator
@@ -890,9 +892,3 @@ end
 compy.graphics.bo_is_convex = bo_is_convex
 compy.graphics.bo_count_selfx = bo_count_selfx
 compy.graphics.bo_decompose_classified = bo_decompose_classified
-
-return {
-  bo_is_convex = bo_is_convex,
-  bo_count_selfx = bo_count_selfx,
-  bo_decompose_classified = bo_decompose_classified
-}

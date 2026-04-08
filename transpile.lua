@@ -7,7 +7,8 @@ compy.graphics = { }
 
 require("svgxml")
 require("svgpath")
-local bo = require("bentley_ottmann")
+require("bentley_ottmann")
+local bo = compy.graphics
 
 -- Transpile-time flatten for convexity check
 
