@@ -2,9 +2,12 @@
 
 -- SVG to love.graphics Lua transpiler.
 
+compy = { }
+compy.graphics = { }
+
 require("svgxml")
 require("svgpath")
-require("bentley_ottmann")
+local bo = require("bentley_ottmann")
 
 -- Transpile-time flatten for convexity check
 
@@ -86,13 +89,13 @@ function t_subdivide(c, depth, pts)
   if T_MAX_DEPTH <= depth or t_is_flat(c) then
     pts[#pts + 1] = c[7]
     pts[#pts + 1] = c[8]
-    return 
+  else
+    local nd = depth + 1
+    sd_mids(c)
+    sd_halves(c, sd_lc[nd], sd_rc[nd])
+    t_subdivide(sd_lc[nd], nd, pts)
+    t_subdivide(sd_rc[nd], nd, pts)
   end
-  local nd = depth + 1
-  sd_mids(c)
-  sd_halves(c, sd_lc[nd], sd_rc[nd])
-  t_subdivide(sd_lc[nd], nd, pts)
-  t_subdivide(sd_rc[nd], nd, pts)
 end
 
 -- Flatten command dispatch
@@ -161,11 +164,11 @@ MIN_SELFX_COUNT = 2
 
 function classify_subpath(subpath)
   local pts = flatten_subpath(subpath)
-  local xc = bo_count_selfx(pts, #pts)
+  local xc = bo.bo_count_selfx(pts, #pts)
   if MIN_SELFX_COUNT <= xc then
     return "selfx"
   end
-  if bo_is_convex(pts) then
+  if bo.bo_is_convex(pts) then
     return "convex"
   end
   return "concave"
@@ -181,20 +184,18 @@ DEFAULT_H = 480
 
 function compute_scale(svg, tw, th)
   local vx, vy, vw, vh = parse_viewbox(svg.attr)
-  if not vx then
-    return 
+  if vx then
+    scale_factor = math.min(tw / vw, th / vh)
   end
-  scale_factor = math.min(tw / vw, th / vh)
 end
 
 -- Scale coordinates in one command
 
 function scale_cmd(cmd)
-  if scale_factor == 1 then
-    return 
-  end
-  for i = 1, #cmd do
-    cmd[i] = cmd[i] * scale_factor
+  if scale_factor ~= 1 then
+    for i = 1, #cmd do
+      cmd[i] = cmd[i] * scale_factor
+    end
   end
 end
 
@@ -483,8 +484,8 @@ end
 -- Emit padded bbox rectangle
 
 function emit_bbox_rect(x1, y1, x2, y2)
-  local w = fmt((x2 - x1) + BBOX_PAD * PAIR)
-  local h = fmt((y2 - y1) + BBOX_PAD * PAIR)
+  local w = fmt((x2 - x1) + BBOX_PAD * 2)
+  local h = fmt((y2 - y1) + BBOX_PAD * 2)
   emit(string.format(
     "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
     fmt(x1 - BBOX_PAD),
@@ -531,14 +532,13 @@ EMIT = { }
 -- Emit fill for path subpaths
 
 function emit_path_fill(names, fill, abs, kinds)
-  if not fill then
-    return 
-  end
-  if 1 < #names then
-    emit_stencil_body(names, kinds)
-    emit_stencil_rect(fill, abs)
-  else
-    emit_single_fill(names[1], fill, kinds[1])
+  if fill then
+    if 1 < #names then
+      emit_stencil_body(names, kinds)
+      emit_stencil_rect(fill, abs)
+    else
+      emit_single_fill(names[1], fill, kinds[1])
+    end
   end
 end
 
@@ -569,37 +569,35 @@ end
 
 function EMIT.rect(node)
   local fill = resolve_fill(node.attr)
-  if not fill then
-    return 
+  if fill then
+    local a = node.attr
+    emit_color(fill)
+    emit(string.format(
+      "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
+      fmt_attr(a.x),
+      fmt_attr(a.y),
+      fmt_attr(a.width),
+      fmt_attr(a.height)
+    ))
+    emit("")
   end
-  local a = node.attr
-  emit_color(fill)
-  emit(string.format(
-    "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
-    fmt_attr(a.x),
-    fmt_attr(a.y),
-    fmt_attr(a.width),
-    fmt_attr(a.height)
-  ))
-  emit("")
 end
 
 -- Emit SVG circle element
 
 function EMIT.circle(node)
   local fill = resolve_fill(node.attr)
-  if not fill then
-    return 
+  if fill then
+    local a = node.attr
+    emit_color(fill)
+    emit(string.format(
+      "gfx.circle(\"fill\", %s, %s, %s)",
+      fmt_attr(a.cx),
+      fmt_attr(a.cy),
+      fmt_attr(a.r)
+    ))
+    emit("")
   end
-  local a = node.attr
-  emit_color(fill)
-  emit(string.format(
-    "gfx.circle(\"fill\", %s, %s, %s)",
-    fmt_attr(a.cx),
-    fmt_attr(a.cy),
-    fmt_attr(a.r)
-  ))
-  emit("")
 end
 
 -- Parse polygon points to number array
@@ -625,7 +623,7 @@ end
 function pts_to_cmds(nums)
   local cmds = { }
   cmds[1] = make_cmd("M", nums[1], nums[2])
-  for i = 3, #nums, PAIR do
+  for i = 3, #nums, 2 do
     cmds[#cmds + 1] = make_cmd("L", nums[i], nums[i + 1])
   end
   cmds[#cmds + 1] = { cmd = "Z" }
@@ -725,8 +723,12 @@ end
 
 function generate(svg, source_name)
   emit("-- Generated from " .. source_name)
-  emit("require(\"bezier\")")
+  emit("require(\"shape2d\")")
   emit("local gfx = love.graphics")
+  emit("local convex_fill = compy.graphics.convex_fill")
+  emit("local concave_fill = compy.graphics.concave_fill")
+  emit("local selfx_fill = compy.graphics.selfx_fill")
+  emit("local bezier_stroke = compy.graphics.bezier_stroke")
   emit("")
   init_gradients(svg)
   walk(svg)

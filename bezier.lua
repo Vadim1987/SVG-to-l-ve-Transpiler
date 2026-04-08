@@ -1,27 +1,24 @@
 -- bezier.lua
 
--- Runtime SVG path renderer for Compy.
+-- Cubic Bezier curve polygonization via de Casteljau
+-- subdivision. Converts path commands (M, L, C, Z)
+-- into flat coordinate arrays for rendering.
 
--- Flatten once, cache. Convex/concave/selfx dispatch.
-
-require("bentley_ottmann")
-
-gfx = love.graphics
+compy = compy or { }
+compy.graphics = compy.graphics or { }
 
 local MAX_DEPTH = 6
 local FLAT_TOL = 0.5
 local DEGEN_TOL = 0.001
-local MIN_POLY = 6
-local MIN_LINE = 4
 
 -- Flat coordinate buffer, reused across calls
 
-flat = { }
-flat_len = 0
+local flat = { }
+local flat_len = 0
 
 -- Append a point to the flat buffer
 
-function flat_push(x, y)
+local function flat_push(x, y)
   flat[flat_len + 1] = x
   flat[flat_len + 2] = y
   flat_len = flat_len + 2
@@ -29,7 +26,7 @@ end
 
 -- Flatness test for subdivision
 
-function is_flat(c)
+local function is_flat(c)
   local dx = c[7] - c[1]
   local dy = c[8] - c[2]
   local d_sq = dx * dx + dy * dy
@@ -44,21 +41,16 @@ end
 
 -- Create zero-filled 8-element buffer
 
-function buf8()
-  local b = {
-    0,
-    0,
-    0,
-    0
-  }
+local function buf8()
+  local b = { 0, 0, 0, 0 }
   b[5], b[6], b[7], b[8] = 0, 0, 0, 0
   return b
 end
 
 -- Preallocated split buffers per depth
 
-split_l = { }
-split_r = { }
+local split_l = { }
+local split_r = { }
 for sd = 1, MAX_DEPTH do
   split_l[sd] = buf8()
   split_r[sd] = buf8()
@@ -66,14 +58,14 @@ end
 
 -- Reusable midpoint storage
 
-sp_mid = { }
+local sp_mid = { }
 sp_mid[1], sp_mid[2] = 0, 0
 sp_mid[3], sp_mid[4] = 0, 0
 sp_mid[5], sp_mid[6] = 0, 0
 
 -- Compute split midpoints
 
-function split_mids(p)
+local function split_mids(p)
   local bx = (p[3] + p[5]) * 0.5
   local by = (p[4] + p[6]) * 0.5
   sp_mid[1] = (p[1] + p[3]) * 0.5
@@ -86,7 +78,7 @@ end
 
 -- Fill left half from curve and midpoint
 
-function fill_left(p, l, mx, my)
+local function fill_left(p, l, mx, my)
   l[1], l[2] = p[1], p[2]
   l[3], l[4] = sp_mid[1], sp_mid[2]
   l[5], l[6] = sp_mid[3], sp_mid[4]
@@ -95,7 +87,7 @@ end
 
 -- Fill right half from curve and midpoint
 
-function fill_right(p, r, mx, my)
+local function fill_right(p, r, mx, my)
   r[1], r[2] = mx, my
   r[3], r[4] = sp_mid[5], sp_mid[6]
   r[5] = (p[5] + p[7]) * 0.5
@@ -105,7 +97,7 @@ end
 
 -- Split curve into two halves at depth
 
-function split_at(p, depth)
+local function split_at(p, depth)
   local l, r = split_l[depth], split_r[depth]
   local mx = (sp_mid[3] + sp_mid[5]) * 0.5
   local my = (sp_mid[4] + sp_mid[6]) * 0.5
@@ -116,28 +108,28 @@ end
 
 -- Recursive de Casteljau subdivision
 
-function subdivide(p, depth)
+local function subdivide(p, depth)
   if MAX_DEPTH <= depth or is_flat(p) then
     flat_push(p[7], p[8])
-    return 
+  else
+    local nd = depth + 1
+    split_mids(p)
+    local l, r = split_at(p, nd)
+    subdivide(l, nd)
+    subdivide(r, nd)
   end
-  local nd = depth + 1
-  split_mids(p)
-  local l, r = split_at(p, nd)
-  subdivide(l, nd)
-  subdivide(r, nd)
 end
 
 -- Path command dispatch
 
-PATH_CMD = { }
+local PATH_CMD = { }
 
-function PATH_CMD.L(cmd, st)
+PATH_CMD.L = function(cmd, st)
   st[1], st[2] = cmd[2], cmd[3]
   flat_push(cmd[2], cmd[3])
 end
 
-function PATH_CMD.M(cmd, st)
+PATH_CMD.M = function(cmd, st)
   st[1], st[2] = cmd[2], cmd[3]
   flat_push(cmd[2], cmd[3])
   st[3], st[4] = cmd[2], cmd[3]
@@ -145,9 +137,9 @@ end
 
 -- Input curve buffer
 
-input_curve = buf8()
+local input_curve = buf8()
 
-function PATH_CMD.C(cmd, st)
+PATH_CMD.C = function(cmd, st)
   input_curve[1] = st[1]
   input_curve[2] = st[2]
   input_curve[3] = cmd[2]
@@ -160,7 +152,7 @@ function PATH_CMD.C(cmd, st)
   st[1], st[2] = cmd[6], cmd[7]
 end
 
-function PATH_CMD.Z(_, st)
+PATH_CMD.Z = function(_, st)
   if st[1] ~= st[3] or st[2] ~= st[4] then
     flat_push(st[3], st[4])
   end
@@ -169,16 +161,11 @@ end
 
 -- Path state: curX curY startX startY
 
-path_state = {
-  0,
-  0,
-  0,
-  0
-}
+local path_state = { 0, 0, 0, 0 }
 
 -- Flatten one subpath into flat buffer
 
-function do_flatten(path)
+local function do_flatten(path)
   flat_len = 0
   path_state[1] = 0
   path_state[2] = 0
@@ -189,128 +176,20 @@ function do_flatten(path)
   end
 end
 
--- Flatten cache: path table -> copy of flat coords
+-- Flatten path to coordinate array.
+-- Converts path commands (M, L, C, Z) into a flat
+-- array of x,y coordinates via de Casteljau
+-- subdivision of cubic Bezier curves.
+-- path: array of {cmd, ...} tables
+-- Returns: coords {x1,y1,x2,y2,...}, length
 
-flat_cache = { }
-
--- Get flat coords, flatten once on first call
-
-function get_flat(path)
-  local cached = flat_cache[path]
-  if cached then
-    return cached, #cached
-  end
+local function flatten_path(path)
   do_flatten(path)
   local copy = { }
   for i = 1, flat_len do
     copy[i] = flat[i]
   end
-  flat_cache[path] = copy
   return copy, flat_len
 end
 
--- Draw array of triangles
-
-function draw_tris(tris)
-  for _, tri in ipairs(tris) do
-    gfx.polygon("fill", tri)
-  end
-end
-
--- Triangle cache
-
-tri_cache = { }
-
--- Fill convex polygon: flatten + draw
-
-function convex_fill(path)
-  local pts, n = get_flat(path)
-  if n < MIN_POLY then
-    return 
-  end
-  gfx.polygon("fill", pts)
-end
-
--- Triangulate and cache result
-
-function cache_tris(path, pts)
-  local ok, tris = pcall(love.math.triangulate, pts)
-  if not ok then
-    return nil
-  end
-  tri_cache[path] = tris
-  return tris
-end
-
--- Fill concave polygon: triangulate + cache
-
-function concave_fill(path)
-  local pts, n = get_flat(path)
-  if n < MIN_POLY then
-    return 
-  end
-  local tris = tri_cache[path]
-  if not tris then
-    tris = cache_tris(path, pts)
-  end
-  if tris then
-    draw_tris(tris)
-  else
-    gfx.polygon("fill", pts)
-  end
-end
-
--- Self-intersection decomposition cache
-
-selfx_cache = { }
-
--- Fill one decomposed sub-polygon
-
-function fill_sub_poly(p)
-  if #p.pts < MIN_POLY then
-    return 
-  end
-  if p.convex then
-    gfx.polygon("fill", p.pts)
-    return 
-  end
-  local ok, t = pcall(love.math.triangulate, p.pts)
-  if ok then
-    draw_tris(t)
-  end
-end
-
--- Get cached decomposition or compute
-
-function get_selfx_polys(path, pts, n)
-  local polys = selfx_cache[path]
-  if polys then
-    return polys
-  end
-  polys = bo_decompose_classified(pts, n)
-  selfx_cache[path] = polys
-  return polys
-end
-
--- Fill self-intersecting path: decompose + fill
-
-function selfx_fill(path)
-  local pts, n = get_flat(path)
-  if n < MIN_POLY then
-    return 
-  end
-  local polys = get_selfx_polys(path, pts, n)
-  for _, p in ipairs(polys) do
-    fill_sub_poly(p)
-  end
-end
-
--- Stroke path: flatten + draw line
-
-function bezier_stroke(path)
-  local pts, n = get_flat(path)
-  if n < MIN_LINE then
-    return 
-  end
-  gfx.line(pts)
-end
+compy.graphics.flatten_path = flatten_path

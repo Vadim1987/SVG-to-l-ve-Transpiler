@@ -31,9 +31,9 @@ SVG viewBox attribute: `min(w/vw, h/vh)`.
 
 ### Run on Compy
 
-Place `bezier.lua`, `bentley_ottmann.lua` and the
-generated Lua file in a Compy project. From the
-console:
+Place `bezier.lua`, `shape2d.lua`,
+`bentley_ottmann.lua` and the generated Lua file in
+a Compy project. From the console:
 
     project("svg")
     dofile("city-car.lua")
@@ -48,18 +48,84 @@ console:
 - `svgpath.lua` — SVG path parser, converts arcs to
   cubics
 - `bentley_ottmann.lua` — self-intersection detection
-  via Bentley-Ottmann sweep line algorithm, polygon
-  decomposition (shared with runtime)
+  and polygon decomposition (shared with runtime)
 
 ### Runtime (Compy)
 
-- `bezier.lua` — renders paths with love.graphics,
-  approximates cubic Bezier at draw time via
-  de Casteljau subdivision, caches flattened
-  coordinates and triangulation between frames
-- `bentley_ottmann.lua` — decomposes self-intersecting
-  polygons into simple sub-polygons at runtime
-  (shared with transpiler)
+- `bezier.lua` — cubic Bezier polygonization via
+  de Casteljau subdivision, flattens path commands
+  into coordinate arrays
+- `shape2d.lua` — 2D shape rendering, fills and
+  strokes paths using flattened coordinates from
+  bezier.lua and decomposition from
+  bentley_ottmann.lua
+- `bentley_ottmann.lua` — Bentley-Ottmann sweep line
+  for self-intersection detection and polygon
+  decomposition (shared with transpiler)
+
+## compy.graphics API
+
+All public symbols are in the `compy.graphics` table.
+Generated Lua files assign frequently used functions
+to locals in their preamble for efficiency.
+
+### bezier.lua
+
+`compy.graphics.flatten_path(path)` — Flatten a path
+(array of command tables) into a coordinate array
+via de Casteljau subdivision of cubic Bezier curves.
+Returns a new flat coordinate array and its length.
+Pure polygonization, no caching.
+
+Path command format:
+
+    { "M", x, y } — move to
+    { "L", x, y } — line to
+    { "C", x1,y1, x2,y2, x,y } — cubic Bezier
+    { "Z" } — close path
+
+### shape2d.lua
+
+`compy.graphics.convex_fill(path)` — Fill a convex
+polygon. Flattens the path (cached) and draws with
+love.graphics.polygon directly. No triangulation.
+
+`compy.graphics.concave_fill(path)` — Fill a concave
+(non-convex, non-self-intersecting) polygon.
+Flattens the path, triangulates via
+love.math.triangulate, caches the triangulation
+for subsequent frames.
+
+`compy.graphics.selfx_fill(path)` — Fill a
+self-intersecting polygon. Flattens the path,
+decomposes into simple sub-polygons via
+Bentley-Ottmann sweep line, classifies each as
+convex or concave, fills each independently.
+Decomposition cached for subsequent frames.
+
+`compy.graphics.bezier_stroke(path)` — Stroke a
+path as a polyline. Flattens the path and draws
+with love.graphics.line.
+
+### bentley_ottmann.lua
+
+`compy.graphics.bo_is_convex(pts)` — Check whether
+a polygon (flat coordinate array) is convex. Returns
+true if all interior angles have the same sign.
+
+`compy.graphics.bo_count_selfx(pts, n)` — Count
+self-intersection points in a polygon. pts is a flat
+coordinate array, n is its length. Returns the
+number of edge-edge crossings found by
+Bentley-Ottmann sweep.
+
+`compy.graphics.bo_decompose_classified(pts, n)` —
+Decompose a self-intersecting polygon into simple
+sub-polygons. Returns an array of tables, each with
+fields pts (flat coordinate array) and convex
+(boolean). Uses Bentley-Ottmann sweep to find
+crossings, builds a planar graph, extracts interior
+faces via CCW half-edge tracing.
 
 ## Path Classification
 
@@ -68,63 +134,31 @@ one of three categories:
 
 - **convex** — all interior angles < 180 degrees,
   no self-intersection. Filled with
-  `gfx.polygon` directly.
+  love.graphics.polygon directly.
 - **concave** — non-convex but no self-intersection.
-  Triangulated via `love.math.triangulate` once on
+  Triangulated via love.math.triangulate once on
   first frame, cached for subsequent frames.
-- **selfx** — self-intersecting path (edges cross
-  each other). Decomposed into simple sub-polygons
-  via Bentley-Ottmann sweep line and planar graph
-  face extraction, then each sub-polygon filled as
-  convex or concave.
-
-### Self-Intersection Handling
-
-Self-intersecting paths (e.g. bowtie shapes, star
-polygons) are detected at transpile time using the
-Bentley-Ottmann sweep line algorithm. The generated
-code calls `selfx_fill()` which at runtime:
-
-1. Flattens the path (cached in `flat_cache`)
-2. Runs Bentley-Ottmann sweep to find all
-   edge-edge intersections
-3. Builds a planar graph with intersection vertices
-4. Extracts interior faces via CCW half-edge tracing
-5. Classifies each face as convex or concave
-6. Fills each face independently (cached in
-   `selfx_cache`)
+- **selfx** — self-intersecting path with 2 or more
+  edge crossings. Decomposed into simple sub-polygons
+  via Bentley-Ottmann sweep line, then each filled
+  as convex or concave. Paths with a single crossing
+  are classified as concave since triangulation
+  handles them correctly.
 
 ## Runtime Optimization
 
 All paths: flatten once on first frame, cached in
-`flat_cache`.
+get_flat.
 
-Convex paths: `gfx.polygon` directly, no
+Convex paths: love.graphics.polygon directly, no
 triangulation.
 
-Concave paths: `love.math.triangulate` once on
-first frame, cached in `tri_cache`.
+Concave paths: love.math.triangulate once on first
+frame, cached.
 
 Self-intersecting paths: Bentley-Ottmann decompose
-once on first frame, cached in `selfx_cache`. Each
-sub-polygon filled with the appropriate method.
-
-## Bezier API
-
-The generated Lua files call these functions from
-`bezier.lua` and `bentley_ottmann.lua`:
-
-    convex_fill(subpath) — draw convex polygon
-    concave_fill(subpath) — triangulate + draw
-    selfx_fill(subpath) — decompose + draw
-    bezier_stroke(subpath) — stroke path as line
-
-Each subpath is an array of commands:
-
-    { "M", x, y } — move to
-    { "L", x, y } — line to
-    { "C", x1,y1, x2,y2, x,y } — cubic Bezier
-    { "Z" } — close path
+once on first frame, cached. Each sub-polygon filled
+with the appropriate method.
 
 ## Supported SVG Elements
 
@@ -155,11 +189,13 @@ Test SVG files included:
 - `city-car.svg` — single path with many subpaths
 - `sailboat-silhouette.svg` — multiple filled paths
 - `lego-man2x.svg` — paths, rects, circles, polygons,
-  gradients. Contains 3 self-intersecting subpaths
-  correctly handled by Bentley-Ottmann decomposition.
+  gradients
 - `pentagram-selfx.svg` — five-pointed star drawn as
   a single self-intersecting polygon (5 vertices,
   5 edge crossings). Demonstrates Bentley-Ottmann
-  decomposition into 6 simple sub-polygons for
-  correct evenodd fill rendering.
-  
+  decomposition.
+- `bowtie.svg` — self-intersecting quadrilateral
+  (4 vertices, 1 crossing). Handled as concave.
+- `double-bowtie.svg` — 5-vertex polygon with
+  2 edge crossings. Demonstrates Bentley-Ottmann
+  decomposition with minimal crossing count.
