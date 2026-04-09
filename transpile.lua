@@ -724,12 +724,12 @@ end
 
 function generate(svg, source_name)
   emit("-- Generated from " .. source_name)
-  emit("require(\"shape2d\")")
   emit("local gfx = love.graphics")
-  emit("local convex_fill = compy.graphics.convex_fill")
-  emit("local concave_fill = compy.graphics.concave_fill")
-  emit("local selfx_fill = compy.graphics.selfx_fill")
-  emit("local bezier_stroke = compy.graphics.bezier_stroke")
+  local ns = "compy.graphics.shape2d"
+  emit("local convex_fill = " .. ns .. ".convex_fill")
+  emit("local concave_fill = " .. ns .. ".concave_fill")
+  emit("local selfx_fill = " .. ns .. ".selfx_fill")
+  emit("local bezier_stroke = " .. ns .. ".bezier_stroke")
   emit("")
   init_gradients(svg)
   walk(svg)

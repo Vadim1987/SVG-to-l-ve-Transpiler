@@ -11,6 +11,9 @@
 -- selfx_fill(path) - decompose and fill
 -- bezier_stroke(path) - stroke path as line
 
+-- All other symbols are file-local.
+-- No changes to the global namespace.
+
 require("bezier")
 require("bentley_ottmann")
 

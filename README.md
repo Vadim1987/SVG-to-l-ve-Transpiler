@@ -31,9 +31,9 @@ SVG viewBox attribute: `min(w/vw, h/vh)`.
 
 ### Run on Compy
 
-Place `bezier.lua`, `shape2d.lua`,
-`bentley_ottmann.lua` and the generated Lua file in
-a Compy project. From the console:
+Place the generated Lua file in a Compy project.
+The platform loads the runtime libraries
+automatically. From the console:
 
     project("svg")
     dofile("city-car.lua")
@@ -63,15 +63,16 @@ a Compy project. From the console:
   for self-intersection detection and polygon
   decomposition (shared with transpiler)
 
-## compy.graphics API
+## compy.graphics.shape2d API
 
-All public symbols are in the `compy.graphics` table.
+All public symbols are in the
+`compy.graphics.shape2d` table on the platform.
 Generated Lua files assign frequently used functions
 to locals in their preamble for efficiency.
 
 ### bezier.lua
 
-`compy.graphics.flatten_path(path)` — Flatten a path
+`compy.graphics.shape2d.flatten_path(path)` — Flatten a path
 (array of command tables) into a coordinate array
 via de Casteljau subdivision of cubic Bezier curves.
 Returns a new flat coordinate array and its length.
@@ -86,40 +87,40 @@ Path command format:
 
 ### shape2d.lua
 
-`compy.graphics.convex_fill(path)` — Fill a convex
+`compy.graphics.shape2d.convex_fill(path)` — Fill a convex
 polygon. Flattens the path (cached) and draws with
 love.graphics.polygon directly. No triangulation.
 
-`compy.graphics.concave_fill(path)` — Fill a concave
+`compy.graphics.shape2d.concave_fill(path)` — Fill a concave
 (non-convex, non-self-intersecting) polygon.
 Flattens the path, triangulates via
 love.math.triangulate, caches the triangulation
 for subsequent frames.
 
-`compy.graphics.selfx_fill(path)` — Fill a
+`compy.graphics.shape2d.selfx_fill(path)` — Fill a
 self-intersecting polygon. Flattens the path,
 decomposes into simple sub-polygons via
 Bentley-Ottmann sweep line, classifies each as
 convex or concave, fills each independently.
 Decomposition cached for subsequent frames.
 
-`compy.graphics.bezier_stroke(path)` — Stroke a
+`compy.graphics.shape2d.bezier_stroke(path)` — Stroke a
 path as a polyline. Flattens the path and draws
 with love.graphics.line.
 
 ### bentley_ottmann.lua
 
-`compy.graphics.bo_is_convex(pts)` — Check whether
+`compy.graphics.shape2d.bo_is_convex(pts)` — Check whether
 a polygon (flat coordinate array) is convex. Returns
 true if all interior angles have the same sign.
 
-`compy.graphics.bo_count_selfx(pts, n)` — Count
+`compy.graphics.shape2d.bo_count_selfx(pts, n)` — Count
 self-intersection points in a polygon. pts is a flat
 coordinate array, n is its length. Returns the
 number of edge-edge crossings found by
 Bentley-Ottmann sweep.
 
-`compy.graphics.bo_decompose_classified(pts, n)` —
+`compy.graphics.shape2d.bo_decompose_classified(pts, n)` —
 Decompose a self-intersecting polygon into simple
 sub-polygons. Returns an array of tables, each with
 fields pts (flat coordinate array) and convex
