@@ -241,6 +241,29 @@ function parse_hex(hex)
   }
 end
 
+-- Named SVG colors
+
+NAMED_COLORS = {
+  white = "FFFFFF",
+  black = "000000",
+  red = "FF0000",
+  green = "008000",
+  blue = "0000FF",
+  lime = "00FF00",
+  yellow = "FFFF00",
+  cyan = "00FFFF"
+}
+
+-- Parse color: named or hex
+
+function parse_color(color)
+  local named = NAMED_COLORS[color]
+  if named then
+    return parse_hex(named)
+  end
+  return parse_hex(color)
+end
+
 -- Sum gradient stop RGB values
 
 function sum_stops(stops)
@@ -307,6 +330,16 @@ function resolve_gradient_refs()
   end
 end
 
+-- Apply fill-opacity to color
+
+function apply_opacity(color, attr)
+  local opacity = attr["fill-opacity"]
+  if opacity then
+    color[4] = tonumber(opacity)
+  end
+  return color
+end
+
 -- Resolve fill attribute to color table
 
 function resolve_fill(attr)
@@ -321,7 +354,7 @@ function resolve_fill(attr)
   if ref and gradients[ref] then
     return average_stops(gradients[ref].stops)
   end
-  return parse_hex(fill)
+  return apply_opacity(parse_color(fill), attr)
 end
 
 -- Number formatting
@@ -515,8 +548,8 @@ end
 
 -- Emit stroke for all subpath names
 
-function emit_stroke(names, stroke_hex, stroke_w)
-  emit_color(parse_hex(stroke_hex))
+function emit_stroke(names, stroke_color, stroke_w)
+  emit_color(parse_color(stroke_color))
   if stroke_w then
     local sw = stroke_w * scale_factor
     emit("gfx.setLineWidth(" .. fmt(sw) .. ")")
@@ -524,6 +557,178 @@ function emit_stroke(names, stroke_hex, stroke_w)
   for _, name in ipairs(names) do
     emit("bezier_stroke(" .. name .. ")")
   end
+end
+
+-- Matrix transform support
+
+ELLIPSE_SEGS = 64
+CORNER_SEGS = 8
+
+-- Parse matrix values from string
+
+function parse_matrix_vals(m)
+  local vals = { }
+  for v in m:gmatch("[%d%.%-eE+]+") do
+    vals[#vals + 1] = tonumber(v)
+  end
+  if #vals == 6 then
+    return vals
+  end
+  return nil
+end
+
+function parse_matrix(transform)
+  if not transform then
+    return nil
+  end
+  local m = transform:match("matrix%((.-)%)")
+  if not m then
+    return nil
+  end
+  return parse_matrix_vals(m)
+end
+
+-- Apply matrix to one point
+
+function mat_point(m, x, y)
+  return m[1] * x + m[3] * y + m[5],
+    m[2] * x + m[4] * y + m[6]
+end
+
+-- Transform and scale a flat point array
+
+function transform_pts(pts, matrix)
+  for i = 1, #pts, 2 do
+    local x, y = mat_point(matrix, pts[i], pts[i + 1])
+    pts[i] = x * scale_factor
+    pts[i + 1] = y * scale_factor
+  end
+  return pts
+end
+
+-- Sample points around an ellipse
+
+function ellipse_pts(cx, cy, rx, ry)
+  local pts = { }
+  local step = 2 * math.pi / ELLIPSE_SEGS
+  for i = 0, ELLIPSE_SEGS - 1 do
+    local a = i * step
+    pts[#pts + 1] = cx + rx * math.cos(a)
+    pts[#pts + 1] = cy + ry * math.sin(a)
+  end
+  return pts
+end
+
+-- Sample points for one rounded corner
+
+rr_rx, rr_ry = 0, 0
+
+function add_corner(pts, cx, cy, a0)
+  local step = QUARTER_TURN / CORNER_SEGS
+  for i = 0, CORNER_SEGS do
+    local a = a0 + i * step
+    pts[#pts + 1] = cx + rr_rx * math.cos(a)
+    pts[#pts + 1] = cy + rr_ry * math.sin(a)
+  end
+end
+
+-- Sample points for a rounded rectangle
+
+function rounded_rect_pts(w, h, rx, ry)
+  rr_rx, rr_ry = rx, ry
+  local pts = { }
+  local pi = math.pi
+  add_corner(pts, rx, ry, pi)
+  add_corner(pts, w - rx, ry, -pi / 2)
+  add_corner(pts, w - rx, h - ry, 0)
+  add_corner(pts, rx, h - ry, pi / 2)
+  return pts
+end
+
+-- Format point array to string array
+
+function fmt_pt_array(pts)
+  local nums = { }
+  for i = 1, #pts do
+    nums[i] = fmt(pts[i])
+  end
+  return nums
+end
+
+-- Emit point array as local variable
+
+function emit_pt_var(prefix, nums)
+  shape_n = shape_n + 1
+  local name = prefix .. shape_n
+  emit("local " .. name .. " = {")
+  for i = 1, #nums, 2 do
+    emit("  " .. nums[i] .. ", " .. nums[i + 1] .. ",")
+  end
+  emit("}")
+  return name
+end
+
+-- Emit pre-transformed polygon fill
+
+function emit_poly_pts(pts)
+  local nums = fmt_pt_array(pts)
+  local name = emit_pt_var("t", nums)
+  emit("gfx.polygon(\"fill\", " .. name .. ")")
+end
+
+-- Emit polygon stroke from point array
+
+function emit_poly_stroke(pts)
+  local nums = fmt_pt_array(pts)
+  nums[#nums + 1] = nums[1]
+  nums[#nums + 1] = nums[2]
+  local name = emit_pt_var("s", nums)
+  emit("gfx.line(" .. name .. ")")
+end
+
+-- Emit shape stroke color and width
+
+function emit_shape_stroke(node)
+  local a = node.attr
+  emit_color(parse_color(a.stroke))
+  local sw = tonumber(a["stroke-width"])
+  if sw then
+    emit("gfx.setLineWidth("
+      .. fmt(sw * scale_factor) .. ")")
+  end
+end
+
+-- Format rect arguments string
+
+function rect_args(a)
+  local args = {
+    fmt_attr(a.x or "0"), fmt_attr(a.y or "0"),
+    fmt_attr(a.width), fmt_attr(a.height)
+  }
+  if a.rx then
+    args[5] = fmt_attr(a.rx)
+    args[6] = fmt_attr(a.ry or a.rx)
+  end
+  return table.concat(args, ", ")
+end
+
+-- Emit gfx.rectangle call
+
+function emit_rect_call(mode, a)
+  emit("gfx.rectangle(\"" .. mode
+    .. "\", " .. rect_args(a) .. ")")
+end
+
+-- Convert rect attributes to point array
+
+function rect_to_pts(a)
+  local w = tonumber(a.width)
+  local h = tonumber(a.height)
+  if a.rx then
+    return rounded_rect_pts(
+      w, h, tonumber(a.rx), tonumber(a.ry or a.rx))
+  end
+  return { 0, 0, w, 0, w, h, 0, h }
 end
 
 -- Element emitters by tag name
@@ -554,6 +759,7 @@ end
 -- Emit SVG path element
 
 function EMIT.path(node)
+  apply_css(node)
   local a = node.attr
   local fill = resolve_fill(a)
   local subs, abs = parse_subpaths(a.d)
@@ -566,27 +772,56 @@ function EMIT.path(node)
   emit("")
 end
 
+-- Emit simple (non-transformed) rect
+
+function emit_simple_rect(node, fill)
+  local a = node.attr
+  if fill then
+    emit_color(fill)
+    emit_rect_call("fill", a)
+  end
+  if a.stroke then
+    emit_shape_stroke(node)
+    emit_rect_call("line", a)
+  end
+  emit("")
+end
+
+-- Emit rect with matrix transform
+
+function emit_transformed_rect(node, fill, matrix)
+  local a = node.attr
+  local pts = rect_to_pts(a)
+  transform_pts(pts, matrix)
+  if fill then
+    emit_color(fill)
+    emit_poly_pts(pts)
+  end
+  if a.stroke then
+    emit_shape_stroke(node)
+    emit_poly_stroke(pts)
+  end
+  emit("")
+end
+
 -- Emit SVG rect element
 
 function EMIT.rect(node)
-  local fill = resolve_fill(node.attr)
-  if fill then
-    local a = node.attr
-    emit_color(fill)
-    emit(string.format(
-      "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
-      fmt_attr(a.x),
-      fmt_attr(a.y),
-      fmt_attr(a.width),
-      fmt_attr(a.height)
-    ))
-    emit("")
+  apply_css(node)
+  local a = node.attr
+  local fill = resolve_fill(a)
+  local matrix = parse_matrix(a.transform)
+  if matrix then
+    emit_transformed_rect(node, fill, matrix)
+  else
+    emit_simple_rect(node, fill)
   end
 end
 
 -- Emit SVG circle element
 
 function EMIT.circle(node)
+  apply_css(node)
   local fill = resolve_fill(node.attr)
   if fill then
     local a = node.attr
@@ -597,6 +832,48 @@ function EMIT.circle(node)
       fmt_attr(a.cy),
       fmt_attr(a.r)
     ))
+    emit("")
+  end
+end
+
+-- Emit ellipse fill call
+
+function emit_ellipse_fill(a)
+  emit(string.format(
+    "gfx.ellipse(\"fill\", %s, %s, %s, %s)",
+    fmt_attr(a.cx), fmt_attr(a.cy),
+    fmt_attr(a.rx), fmt_attr(a.ry)))
+end
+
+-- Emit transformed ellipse as polygon
+
+function emit_transformed_ellipse(a, matrix)
+  local pts = ellipse_pts(
+    tonumber(a.cx or "0"), tonumber(a.cy or "0"),
+    tonumber(a.rx), tonumber(a.ry))
+  transform_pts(pts, matrix)
+  emit_poly_pts(pts)
+end
+
+-- Emit ellipse: simple or transformed
+
+function emit_ellipse(a)
+  local matrix = parse_matrix(a.transform)
+  if matrix then
+    emit_transformed_ellipse(a, matrix)
+  else
+    emit_ellipse_fill(a)
+  end
+end
+
+-- Emit SVG ellipse element
+
+function EMIT.ellipse(node)
+  apply_css(node)
+  local fill = resolve_fill(node.attr)
+  if fill then
+    emit_color(fill)
+    emit_ellipse(node.attr)
     emit("")
   end
 end
@@ -633,19 +910,26 @@ end
 
 -- Emit SVG polygon as path with classification
 
+-- Emit polygon element stroke if present
+
+function emit_el_stroke(name, a)
+  if a.stroke then
+    local sw = tonumber(a["stroke-width"])
+    emit_stroke({ name }, a.stroke, sw)
+  end
+end
+
 function emit_polygon_el(node)
-  local fill = resolve_fill(node.attr)
+  apply_css(node)
   local a = node.attr
+  local fill = resolve_fill(a)
   local nums = parse_pts(a)
   local cmds = pts_to_cmds(nums)
   local name, kind = emit_one_subpath(cmds)
   if fill then
     emit_single_fill(name, fill, kind)
   end
-  if a.stroke then
-    local sw = tonumber(a["stroke-width"])
-    emit_stroke({ name }, a.stroke, sw)
-  end
+  emit_el_stroke(name, a)
   emit("")
 end
 
@@ -654,15 +938,13 @@ EMIT.polygon = emit_polygon_el
 -- Emit SVG line element as stroke
 
 function EMIT.line(node)
+  apply_css(node)
   local a = node.attr
   local cmds = { }
   cmds[1] = make_cmd("M", tonumber(a.x1), tonumber(a.y1))
   cmds[2] = make_cmd("L", tonumber(a.x2), tonumber(a.y2))
   local name = emit_one_subpath(cmds)
-  if a.stroke then
-    local sw = tonumber(a["stroke-width"])
-    emit_stroke({ name }, a.stroke, sw)
-  end
+  emit_el_stroke(name, a)
   emit("")
 end
 
@@ -697,6 +979,64 @@ function parse_viewbox(attr)
   return tonumber(x), tonumber(y), tonumber(w), tonumber(h)
 end
 
+-- CSS class styles from <style> blocks
+
+css_classes = { }
+
+-- Parse CSS properties string
+
+function parse_css_props(body)
+  local props = { }
+  for key, val in body:gmatch("([%w%-]+)%s*:%s*([^;%}]+)") do
+    props[key] = val:match("^%s*(.-)%s*$")
+  end
+  return props
+end
+
+-- Parse one CSS block
+
+function parse_css_block(block)
+  for class, body in block:gmatch("%.(%w+)%s*{(.-)}") do
+    css_classes[class] = parse_css_props(body)
+  end
+end
+
+-- Extract CSS from raw XML before parsing
+
+function extract_css(xml)
+  for block in xml:gmatch("<style[^>]*>(.-)</style>") do
+    block = block:gsub("<!%[CDATA%[", "")
+    block = block:gsub("%]%]>", "")
+    parse_css_block(block)
+  end
+end
+
+-- Apply one CSS class to node attributes
+
+function apply_class(attr, name)
+  local props = css_classes[name]
+  if not props then
+    return 
+  end
+  for key, val in pairs(props) do
+    if not attr[key] then
+      attr[key] = val
+    end
+  end
+end
+
+-- Apply CSS classes to node attributes
+
+function apply_css(node)
+  local cls = node.attr.class
+  if not cls then
+    return 
+  end
+  for name in cls:gmatch("%S+") do
+    apply_class(node.attr, name)
+  end
+end
+
 -- Read SVG file
 
 function load_svg(path)
@@ -707,6 +1047,7 @@ function load_svg(path)
   end
   local xml = f:read("*a")
   f:close()
+  extract_css(xml)
   local root = parse_xml(xml)
   return find_child(root, "svg")
 end

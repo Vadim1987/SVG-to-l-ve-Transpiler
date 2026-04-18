@@ -165,23 +165,43 @@ with the appropriate method.
 
 - `path` (M, L, H, V, C, S, A, Z — absolute and
   relative)
-- `rect`
+- `rect` (with optional rx/ry for rounded corners)
 - `circle`
+- `ellipse`
 - `polygon`
 - `line`
 - `g` (groups, nested)
 - `linearGradient` — averaged to solid color
 - `viewBox` — scaled at transpile time
-- `fill-rule` — always evenodd
+- `fill-rule` — evenodd via stencil (nonzero treated
+  as evenodd)
+
+## Supported CSS and Styling
+
+- `<style>` blocks in `<defs>` with class selectors
+  (e.g. `.fil0 {fill:#F08466}`)
+- `class` attribute on elements, multiple classes
+- `fill`, `fill-opacity`, `fill-rule` from CSS
+- `stroke`, `stroke-width` from CSS
+- Named SVG colors: white, black, red, green, blue,
+  lime, yellow, cyan
+- Hex colors: 3-char and 6-char 
+
+## Transforms
+
+- `transform="matrix(a,b,c,d,e,f)"` on `rect` and
+  `ellipse` elements. The element is sampled into
+  a polygon, transformed, and emitted as
+  `gfx.polygon`. Rounded rects are sampled along
+  their corner arcs.
 
 ## Not Supported
 
-- `fill-rule="nonzero"`
 - `text`, `image`, `use`, `clipPath`, `mask`
-- `stroke-dasharray`, `opacity`
-- `transform` on elements
-- `style` attribute, inline CSS
-- `rgb()` color syntax, CSS system colors
+- `stroke-dasharray`, `opacity` (element-level)
+- `transform` on `path`, `g`, or other elements
+- `rgb()` color syntax
+- CSS selectors other than class (id, tag, etc.)
 
 ## Examples
 
