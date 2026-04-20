@@ -391,19 +391,12 @@ end
 -- Draws go inside the returned draw function
 -- called each frame.
 
-out_decls = { }
-out_draws = { }
-
-function emit_decl(s)
-  out_decls[#out_decls + 1] = s
-end
-
-function emit_draw(s)
-  out_draws[#out_draws + 1] = s
-end
+local insert = table.insert
+decls = { }
+draws = { }
 
 function emit_color(color)
-  emit_draw("gfx.setColor(" .. fmt_color(color) .. ")")
+  insert(draws, "gfx.setColor(" .. fmt_color(color) .. ")")
 end
 
 -- Shape counter for variable names
@@ -427,7 +420,7 @@ function emit_cmd(cmd)
   if 0 < #cmd then
     s = s .. ", " .. fmt_nums(cmd)
   end
-  emit_decl(s .. " },")
+  insert(decls, s .. " },")
 end
 
 -- Emit scaled commands for subpath
@@ -445,9 +438,9 @@ function emit_one_subpath(subpath)
   shape_n = shape_n + 1
   local name = "paths.p" .. shape_n
   local kind = classify_subpath(subpath)
-  emit_decl(name .. " = { -- " .. kind)
+  insert(decls, name .. " = { -- " .. kind)
   emit_scaled_cmds(subpath)
-  emit_decl("}")
+  insert(decls, "}")
   return name, kind
 end
 
@@ -514,13 +507,13 @@ FILL_FN = {
 -- Emit stencil function body
 
 function emit_stencil_body(names, kinds)
-  emit_draw("gfx.stencil(function()")
+  insert(draws, "gfx.stencil(function()")
   for i, name in ipairs(names) do
     local fn = FILL_FN[kinds[i]]
-    emit_draw("  " .. fn .. "(" .. name .. ")")
+    insert(draws, "  " .. fn .. "(" .. name .. ")")
   end
-  emit_draw("end, \"invert\", 1)")
-  emit_draw("gfx.setStencilTest(\"greater\", 0)")
+  insert(draws, "end, \"invert\", 1)")
+  insert(draws, "gfx.setStencilTest(\"greater\", 0)")
 end
 
 -- Emit padded bbox rectangle
@@ -528,7 +521,7 @@ end
 function emit_bbox_rect(x1, y1, x2, y2)
   local w = fmt((x2 - x1) + BBOX_PAD * 2)
   local h = fmt((y2 - y1) + BBOX_PAD * 2)
-  emit_draw(string.format(
+  insert(draws, string.format(
     "gfx.rectangle(\"fill\", %s, %s, %s, %s)",
     fmt(x1 - BBOX_PAD),
     fmt(y1 - BBOX_PAD),
@@ -543,7 +536,7 @@ function emit_stencil_rect(fill, abs)
   local x1, y1, x2, y2 = bbox_from_abs(abs)
   emit_color(fill)
   emit_bbox_rect(x1, y1, x2, y2)
-  emit_draw("gfx.setStencilTest()")
+  insert(draws, "gfx.setStencilTest()")
 end
 
 -- Emit single subpath fill
@@ -551,7 +544,7 @@ end
 function emit_single_fill(name, fill, kind)
   emit_color(fill)
   local fn = FILL_FN[kind]
-  emit_draw(fn .. "(" .. name .. ")")
+  insert(draws, fn .. "(" .. name .. ")")
 end
 
 -- Emit stroke for all subpath names
@@ -560,10 +553,10 @@ function emit_stroke(names, stroke_color, stroke_w)
   emit_color(parse_color(stroke_color))
   if stroke_w then
     local sw = stroke_w * scale_factor
-    emit_draw("gfx.setLineWidth(" .. fmt(sw) .. ")")
+    insert(draws, "gfx.setLineWidth(" .. fmt(sw) .. ")")
   end
   for _, name in ipairs(names) do
-    emit_draw("bezier_stroke(" .. name .. ")")
+    insert(draws, "bezier_stroke(" .. name .. ")")
   end
 end
 
@@ -668,11 +661,11 @@ end
 function emit_pt_var(prefix, nums)
   shape_n = shape_n + 1
   local name = "paths." .. prefix .. shape_n
-  emit_decl(name .. " = {")
+  insert(decls, name .. " = {")
   for i = 1, #nums, 2 do
-    emit_decl("  " .. nums[i] .. ", " .. nums[i + 1] .. ",")
+    insert(decls, "  " .. nums[i] .. ", " .. nums[i + 1] .. ",")
   end
-  emit_decl("}")
+  insert(decls, "}")
   return name
 end
 
@@ -681,7 +674,7 @@ end
 function emit_poly_pts(pts)
   local nums = fmt_pt_array(pts)
   local name = emit_pt_var("t", nums)
-  emit_draw("gfx.polygon(\"fill\", " .. name .. ")")
+  insert(draws, "gfx.polygon(\"fill\", " .. name .. ")")
 end
 
 -- Emit polygon stroke from point array
@@ -691,7 +684,7 @@ function emit_poly_stroke(pts)
   nums[#nums + 1] = nums[1]
   nums[#nums + 1] = nums[2]
   local name = emit_pt_var("s", nums)
-  emit_draw("gfx.line(" .. name .. ")")
+  insert(draws, "gfx.line(" .. name .. ")")
 end
 
 -- Emit shape stroke color and width
@@ -701,7 +694,7 @@ function emit_shape_stroke(node)
   emit_color(parse_color(a.stroke))
   local sw = tonumber(a["stroke-width"])
   if sw then
-    emit_draw("gfx.setLineWidth("
+    insert(draws, "gfx.setLineWidth("
       .. fmt(sw * scale_factor) .. ")")
   end
 end
@@ -723,7 +716,7 @@ end
 -- Emit gfx.rectangle call
 
 function emit_rect_call(mode, a)
-  emit_draw("gfx.rectangle(\"" .. mode
+  insert(draws, "gfx.rectangle(\"" .. mode
     .. "\", " .. rect_args(a) .. ")")
 end
 
@@ -777,7 +770,7 @@ function EMIT.path(node)
     local sw = tonumber(a["stroke-width"])
     emit_stroke(names, a.stroke, sw)
   end
-  emit_draw("")
+  insert(draws, "")
 end
 
 -- Emit simple (non-transformed) rect
@@ -792,7 +785,7 @@ function emit_simple_rect(node, fill)
     emit_shape_stroke(node)
     emit_rect_call("line", a)
   end
-  emit_draw("")
+  insert(draws, "")
 end
 
 -- Emit rect with matrix transform
@@ -809,7 +802,7 @@ function emit_transformed_rect(node, fill, matrix)
     emit_shape_stroke(node)
     emit_poly_stroke(pts)
   end
-  emit_draw("")
+  insert(draws, "")
 end
 
 -- Emit SVG rect element
@@ -834,20 +827,20 @@ function EMIT.circle(node)
   if fill then
     local a = node.attr
     emit_color(fill)
-    emit_draw(string.format(
+    insert(draws, string.format(
       "gfx.circle(\"fill\", %s, %s, %s)",
       fmt_attr(a.cx),
       fmt_attr(a.cy),
       fmt_attr(a.r)
     ))
-    emit_draw("")
+    insert(draws, "")
   end
 end
 
 -- Emit ellipse fill call
 
 function emit_ellipse_fill(a)
-  emit_draw(string.format(
+  insert(draws, string.format(
     "gfx.ellipse(\"fill\", %s, %s, %s, %s)",
     fmt_attr(a.cx), fmt_attr(a.cy),
     fmt_attr(a.rx), fmt_attr(a.ry)))
@@ -882,7 +875,7 @@ function EMIT.ellipse(node)
   if fill then
     emit_color(fill)
     emit_ellipse(node.attr)
-    emit_draw("")
+    insert(draws, "")
   end
 end
 
@@ -938,7 +931,7 @@ function emit_polygon_el(node)
     emit_single_fill(name, fill, kind)
   end
   emit_el_stroke(name, a)
-  emit_draw("")
+  insert(draws, "")
 end
 
 EMIT.polygon = emit_polygon_el
@@ -953,7 +946,7 @@ function EMIT.line(node)
   cmds[2] = make_cmd("L", tonumber(a.x2), tonumber(a.y2))
   local name = emit_one_subpath(cmds)
   emit_el_stroke(name, a)
-  emit_draw("")
+  insert(draws, "")
 end
 
 -- Walk SVG tree in document order
@@ -1073,23 +1066,28 @@ end
 
 function emit_preamble(source_name)
   local ns = "compy.graphics.shape2d"
-  emit_decl("-- Generated from " .. source_name)
-  emit_decl("local gfx = love.graphics")
-  emit_decl("local convex_fill = " .. ns .. ".convex_fill")
-  emit_decl("local concave_fill = " .. ns .. ".concave_fill")
-  emit_decl("local selfx_fill = " .. ns .. ".selfx_fill")
-  emit_decl("local bezier_stroke = " .. ns .. ".bezier_stroke")
-  emit_decl("local paths = { }")
-  emit_decl("")
+  local lines = {
+    "-- Generated from " .. source_name,
+    "local gfx = love.graphics",
+    "local convex_fill = " .. ns .. ".convex_fill",
+    "local concave_fill = " .. ns .. ".concave_fill",
+    "local selfx_fill = " .. ns .. ".selfx_fill",
+    "local bezier_stroke = " .. ns .. ".bezier_stroke",
+    "local paths = { }",
+    ""
+  }
+  for _, line in ipairs(lines) do
+    insert(decls, line)
+  end
 end
 
 -- Assemble module: decls then draws wrapped in fn
 
 function assemble_module()
   local parts = {
-    table.concat(out_decls, "\n"),
+    table.concat(decls, "\n"),
     "return function()",
-    table.concat(out_draws, "\n"),
+    table.concat(draws, "\n"),
     "end"
   }
   return table.concat(parts, "\n") .. "\n"
